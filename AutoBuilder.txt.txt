@@ -1,0 +1,2339 @@
+' Written by Matthew Ruetz
+' UTD: July 20 / 2021
+
+' ------------------------------------ SET THESE VALUES TO YOUR PREFERENCE --------------------------------------------
+
+' bothSideThreshold is the minumum number of layers for deliveries that will be distributed across BOTH columns
+' (ex. If the delivery has at least 6 full skids (6 skids * 7 layers/skid = 42 layers), it will be put in both cols)
+Public Const bothSideThreshold = 50
+
+Public Const ALLOW_THREADED_COMMENTS = True
+
+' THE FOLLOWING FACTORS DICTATE PLACEMENT DECISIONS MADE BY THE PROGRAM FOR EACH DELIVERY
+
+Public FIT_FACTOR As Integer ' The col with greatest stack (stack=0 if impossible)
+        ' with existing partial behind + (this many) point PER LAYER of full stack
+        
+Public MIN_BW_FACTOR As Integer ' The col with a BW at the end LOSES points = (this)*5-(layers in partial)
+        ' if a stack with this partial is impossible
+     
+Public EVEN_FACTOR As Integer ' The col that is the shortest + (this many) point for every space
+        ' it is shorter by
+        
+Public TOTAL_DELIVS
+Public DELIVS_PLACED
+
+Public BYPASS_UNEVEN_PARTIAL_STACK
+        
+' -------- Output - Default FACTORS --------- EVENLY WEIGHTED FACTORS
+Public Const FIT_FACTOR_1 = 1
+
+Public Const MIN_BW_FACTOR_1 = 1
+     
+Public Const EVEN_FACTOR_1 = 1
+
+' -------- Output - Maintain Even Weight FACTORS --------- TRIES TO MAKE LEFT AND RIGHT EVEN WEIGHT
+Public Const FIT_FACTOR_2 = 1
+
+Public Const MIN_BW_FACTOR_2 = 1
+     
+Public Const EVEN_FACTOR_2 = 10
+
+' -------- Output - Compress FACTORS --------- TRIES TO COMPRESS AS MUCH AS POSSIBLE
+Public Const FIT_FACTOR_3 = 10
+
+Public Const MIN_BW_FACTOR_3 = 1
+     
+Public Const EVEN_FACTOR_3 = 1
+
+' -------- Output - Minimize BWs FACTORS --------- TRIES TO MINIMIZE BW's AS MUCH AS POSSIBLE
+Public Const FIT_FACTOR_4 = 1
+
+Public Const MIN_BW_FACTOR_4 = 10
+     
+Public Const EVEN_FACTOR_4 = 1
+' ------------------------------------------------------------------------------------------------------------------------
+
+' This subroutine is button-activated from the BUILD button on the spreadsheet
+' If no FACTORS are given on the Input page, it will produce 3 different output
+' sheets, each using a different set of factors (defined above as Public Const)
+Sub AutoBuild()
+    Dim lastStoreNumCell
+    Dim currentDropRow
+    currentDropRow = 6
+
+    Application.DisplayAlerts = False
+    Worksheets("Input").Activate
+    
+    If rangeIsEmpty("H4", "H6") Then
+        ' NO ROUTE INFO given. Ask user if they want to build sheets without this info
+        ans = MsgBox("No Trailer #, Driver, or Time Out has been given!" & vbNewLine & vbNewLine & _
+        "Would you like to build anyway?", vbYesNo + vbExclamation, "WARNING")
+        If ans = vbNo Then
+            End
+        End If
+    End If
+    
+'--------- This block COUNTS the total layers, deliveries, warns user for very large runs, and selects the first store to be placed ---------
+    If IsEmpty(Range("J6")) Then
+        displayError (1) ' No delivs pasted in error
+    Else
+        Range("J6").Select
+        
+        ' This loop finds and selects the LAST delivery, to be placed FIRST in the truck
+        While (Not IsEmpty(ActiveCell))
+        
+            ' If all necessary info is given for this delivery...
+            If (Not IsEmpty(Range("K" & currentDropRow)) And IsNumeric(Range("K" & currentDropRow).Value)) _
+            Or (Not IsEmpty(Range("L" & currentDropRow)) And IsNumeric(Range("L" & currentDropRow).Value)) Then
+                TOTAL_DELIVS = TOTAL_DELIVS + 1 ' Counting this toward total deliveries
+                totalLayers = totalLayers + Range("K" & currentDropRow).Value ' and total LAYERS
+            End If
+            
+            ' iterate down past the last item on the list
+            currentDropRow = currentDropRow + 1
+            lastStoreNumCell = "J" & CStr(currentDropRow)
+            Range(lastStoreNumCell).Select
+        Wend
+        
+        ' If the total layers exceed the trucks limit in theory, give warning
+        If (totalLayers > 180 And TOTAL_DELIVS < 7) Or totalLayers > 175 And TOTAL_DELIVS > 6 Then
+            ans = MsgBox("WARNING: Load may be too big for this trailer!" & vbNewLine & vbNewLine & _
+            "Are you sure you want to try Autobuild?", vbYesNo + vbExclamation, "WARNING")
+            If ans = vbNo Then
+                End
+            End If
+        End If
+        ' This sets active cell to the LAST store # cell on the list (bottom)
+        currentDropRow = currentDropRow - 1
+        lastStoreNumCell = "J" & CStr(currentDropRow)
+        Range(lastStoreNumCell).Select
+    End If
+    '-------------------------------------------------------------------------------------------------------------------------------------
+    
+    ' If explicit decision factors are given on the Input sheet,
+    ' apply these and make ONE load sheet on "Input"
+    If Not rangeIsEmpty("X5", "X7") Then
+    
+        cleared = clearTrailer()
+
+        If Not IsEmpty(Range("X5")) And IsNumeric(Range("X5").Value) Then
+            FIT_FACTOR = CInt(Range("X5").Value)
+        Else
+            FIT_FACTOR = 1
+        End If
+        
+        If Not IsEmpty(Range("X6")) And IsNumeric(Range("X6").Value) Then
+            MIN_BW_FACTOR = CInt(Range("X6").Value)
+        Else
+            MIN_BW_FACTOR = 1
+        End If
+        
+        If Not IsEmpty(Range("X7")) And IsNumeric(Range("X7").Value) Then
+            EVEN_FACTOR = CInt(Range("X7").Value)
+        Else
+            EVEN_FACTOR = 1
+        End If
+        
+        Ready = prepareOutputSheet("Input")
+        
+        If Ready Then
+            ' Now build this load sheet using the factors
+            Worksheets("Input").Activate
+            success = AutoBuildSheet(FIT_FACTOR, MIN_BW_FACTOR, EVEN_FACTOR, lastStoreNumCell)
+        End If
+    Else
+        ' First all sheets are reset / cleared
+        resetOutputs
+        
+        success = 0 ' Counts the number of sheets successfully build
+        
+        ' The delivery list and other info is coppied to ouput sheet with this function
+        Ready = prepareOutputSheet("Output - Default")
+        If Ready Then
+            ' First select option 1 sheet and clear anything currently placed in the trailer section
+            Worksheets("Output - Default").Activate
+            success = success + AutoBuildSheet(FIT_FACTOR_1, MIN_BW_FACTOR_1, EVEN_FACTOR_1, lastStoreNumCell)
+        End If
+        
+        Ready = prepareOutputSheet("Output - Maintain Even Weight")
+        If Ready Then
+            ' Repeat this process for trial 2
+            Worksheets("Output - Maintain Even Weight").Activate
+            success = success + AutoBuildSheet(FIT_FACTOR_2, MIN_BW_FACTOR_2, EVEN_FACTOR_2, lastStoreNumCell)
+        End If
+        
+        Ready = prepareOutputSheet("Output - Compress")
+        If Ready Then
+            ' Repeat this process for trial 3
+            Worksheets("Output - Compress").Activate
+            success = success + AutoBuildSheet(FIT_FACTOR_3, MIN_BW_FACTOR_3, EVEN_FACTOR_3, lastStoreNumCell)
+        End If
+        
+        Ready = prepareOutputSheet("Output - Minimize BWs")
+        If Ready Then
+            ' Repeat this process for trial 4
+            Worksheets("Output - Minimize BWs").Activate
+            success = success + AutoBuildSheet(FIT_FACTOR_4, MIN_BW_FACTOR_4, EVEN_FACTOR_4, lastStoreNumCell)
+        End If
+        
+        trash = MsgBox("All outputs finished!" _
+        & vbNewLine & "Please look at Ouput Option sheets.", vbInformation, "DONE!")
+    End If
+    
+    TOTAL_DELIVS = 0
+
+End Sub
+
+
+
+' This function builds an individual load sheet on the worksheet that is active when the funciton is called.
+' If INPUT FACTORS are given on the Input sheet, these values will be used, or set to 1 if SOME of them are empty.
+' If ALL INPUT FACTORS are EMPTY then this function should be called with factor values given as arguments.
+'   ARGS:   cur_FIT_FACTOR - the FIT_FACTOR for the current option being built.
+'           cur_MIN_BW_FACTOR - the MIN_BW_FACTOR for the current option being built.
+'           cur_EVEN_FACTOR - the MIN_BW_FACTOR for the current option being built.
+'
+'   RET:    1 - All functions were successful and the load sheet is complete
+'           0 - There was an error at some point during the build process
+'           -1 - Your computer has gained consciousness and can read minds. Proceed with caution.
+Function AutoBuildSheet(Optional cur_FIT_FACTOR As Integer, Optional cur_MIN_BW_FACTOR As Integer, Optional cur_EVEN_FACTOR As Integer, Optional ByVal currentDropCell)
+
+    ' Set PUBLIC factors equal to those given for this trial
+    FIT_FACTOR = cur_FIT_FACTOR
+    MIN_BW_FACTOR = cur_MIN_BW_FACTOR
+    EVEN_FACTOR = cur_EVEN_FACTOR
+    
+    Dim success
+    success = 0
+    
+    Dim totalLayers
+    totalLayers = 0
+    
+    Dim totalKegs
+    totalKegs = 0
+    
+    Dim kegComment
+    kegComment = ""
+    
+    ' First, starting in the last item in the list
+    Range(currentDropCell).Select
+    currentDropRow = ActiveCell.Row
+
+    ' DELIVS_PLACED keeps track of how many have already been placed in the truck section
+    DELIVS_PLACED = 0
+    
+    ' Now the drops are placed on the trailer side, starting with the last delivery
+    ' and moving up the list. Finishes when the first delivery is placed.
+    While (currentDropRow > 5)
+    
+        ' This variable tracks the STORE number for the delivery being placed in this iteration
+        curStoreNum = ActiveCell.Value
+        
+        layerCountCell = "K" & CStr(currentDropRow)   ' Gets the cells with layer count for current deliv
+        layers = Range(layerCountCell).Value
+        
+        nextLayerCountCell = "K" & CStr(currentDropRow - 1) 'layer count for NEXT deliv
+        nextNextLayerCountCell = "K" & CStr(currentDropRow - 2) ' layer count cell for 2 deliveries ahead
+        
+        kegCountCell = "L" & CStr(currentDropRow) ' Keg count for current deliv
+        totalKegs = 0
+        kegComment = ""
+        
+        ' If this delivery has kegs...
+        If Not IsEmpty(Range(kegCountCell)) And IsNumeric(Range(kegCountCell).Value) Then
+            totalKegs = CInt(Range(kegCountCell).Value) ' get number of kegs for this deliv
+            
+            ' The comment in the keg cell tells the sizes (30L, 50/58L).
+            If Not Range(kegCountCell).Comment Is Nothing Then
+                kegComment = Range(kegCountCell).Comment.Text ' for NOTES
+            ElseIf Not Range(kegCountCell).CommentThreaded Is Nothing Then
+                kegComment = Range(kegCountCell).CommentThreaded.Text ' for COMMENTS
+            End If
+        End If
+        
+        Dim remainingKegs
+        remainingKegs = totalKegs
+        
+        futurePartialLayers = 0
+        
+        ' This gets the partial layers for the NEXT delivery, to better place the the current delivery.
+        If IsNumeric(Range(nextLayerCountCell).Value) And Not IsEmpty(Range(nextLayerCountCell)) Then
+            futureFullSkids = Application.WorksheetFunction.RoundDown(CInt(Range(nextLayerCountCell).Value) / 7, 0)
+            futurePartialLayers = CInt(Range(nextLayerCountCell).Value) Mod 7
+        End If
+        
+        ' If store num isn't blank and has some layers or kegs then place this delivery
+        If curStoreNum <> "" And _
+        ((Not IsEmpty(Range(layerCountCell)) And IsNumeric(Range(layerCountCell).Value)) _
+        Or (Not IsEmpty(Range(kegCountCell)) And IsNumeric(Range(kegCountCell).Value))) Then
+            ' The smartPlace fn is called to place each individual delivery's load, one-by-one
+            success = success + smartPlace(layers, curStoreNum, futurePartialLayers, futureFullSkids, remainingKegs, kegComment)
+            DELIVS_PLACED = DELIVS_PLACED + 1 ' increment to show a delivery was placed
+        End If
+        
+        ' Iterates to the next delivery before the loop repeats...
+        currentDropRow = currentDropRow - 1
+        currentDropCell = "J" & CStr(currentDropRow)
+        Range(currentDropCell).Select
+        
+    Wend
+    
+    placeBWs ' subroutine places BW's in every cell where they are needed
+    DELIVS_PLACED = 0
+    AutoBuildSheet = success
+        
+End Function
+
+
+
+' The big 'n ugly smartPlace controlls the placement of an individual delivery in the truck section.
+' There are 3 types of placement for whole deliveries:
+'       1. left or right side (column B or C) with partial stacking behind if possible
+'       2. Both side placement, where the left and right side are used, with partial stacking with the best possible
+'           partial on either side of the truck
+'       3. Staggered placement, where the partial is stacked on one side, and the full skids on the other,
+'           which makes room for a triple stack for the next placement if the resultant stack is <= 7 Layers.
+
+'   ARGS:   layers - (int) the total number of layers for the store being placed
+'           curStoreNum - (int) the number for the store being placed
+'           futurePartialLayers (int) - number of partial layers for the NEXT delivery to be placed, to decide whether
+'               offset partial placement should be used to create a triple stack with the next delivery.
+'           remainingKegs (int) - number of kegs that need to still be placed for this deliv
+
+'   RET:    1 - (int) represents successful placement (no errors)
+'           0 - (int) represents fail case
+Function smartPlace(layers, curStoreNum, futurePartialLayers, futureFullSkids, remainingKegs, kegComment)
+
+    Dim proposedCell
+    Dim plusPartial
+    plusPartial = 0
+    
+    Dim plusFuturePartial
+    plusFuturePartial = 0
+    
+    BSP_used = False
+    tripleStack = False
+    ' Get the number of full skids, and partial layers by division by 7 with the layer count
+    If IsNumeric(layers) Then ' Check that a NUMBER is in the Layers cell for this deliv.
+        numFullSkids = Application.WorksheetFunction.RoundDown(layers / 7, 0)
+        partialLayers = layers Mod 7
+        
+        If partialLayers > 0 Then
+            plusPartial = 1 ' indicates whether there is a partial skid for this deliv
+        End If
+        
+        If futurePartialLayers > 0 Then
+            plusFuturePartial = 1 ' indicates whether there is a partial skid for next deliv
+        End If
+    Else
+        smartPlace = 1 ' If not a number, this function will return and do nothing
+        Exit Function
+    End If
+    
+    fullSkidStartCell = ""
+    
+    ' chooseColumn function is used to pick the optimal cell to start placing in
+    proposedCell = chooseColumn(curStoreNum, partialLayers, numFullSkids, futurePartialLayers, futureFullSkids, remainingKegs, kegComment)
+
+    ' If an active cell is returned..
+    If proposedCell <> "err" Then
+        Range(proposedCell).Select ' select the returned cell
+        
+        If ActiveCell.Row > 16 Then ' If this cell is outside the trailer..
+            trash = displayError(4, "C" & ActiveCell.Row - 1) ' diplay overflow error
+            smartPlace = 0
+            Exit Function
+        End If
+    Else ' chooseColumn had an error..
+        smartPlace = 0
+        Exit Function
+    End If
+    
+    ' This variable tracks whether the partial skid has been placed or not
+    partialPlaced = False
+    If partialLayers = 0 Then
+        ' If there are no partials, say it's been placed
+        partialPlaced = True
+    End If
+    
+    ' check the overextension value if this deliv was placed in this column:
+    colB_len = getColLength("B")
+    colC_len = getColLength("C")
+    
+    delivOverExtend = checkOverExtend(ActiveCell.Column, curStoreNum, numFullSkids, partialLayers, remainingKegs, kegComment)
+    
+    ' If this is the last delivery OR would over-extend the other column by the end OR at least 7 pallets OR would cause trailer to overflow in a line...
+        ' distribute accross both sides of trailer for even columns (BOTH-SIDE PLACE!)
+    If TOTAL_DELIVS - DELIVS_PLACED = 1 Or (delivOverExtend > 0 And ActiveCell.Column = 2) Or (delivOverExtend > 1 And ActiveCell.Column = 3) _
+    Or willNeedDriverToRebalance(proposedCell, colB_len, colC_len, numFullSkids, partialLayers) = 1 _
+    Or ActiveCell.Row + numFullSkids + plusPartial > 16 Then
+
+        ' distribute accross both sides of trailer for even columns
+        smartPlace = bothSidePlace(curStoreNum, partialLayers, numFullSkids, futurePartialLayers, futureFullSkids, remainingKegs, kegComment)
+        BSP_used = True
+        ' The partial AND kegs would have been placed by the bothSidePlace function.
+        partialPlaced = True
+        
+    ' If NOT the last deliv, and partial skid is returned from chooseColumn, start with trying to stack partials
+    ElseIf ActiveCell.Value Like "*-*" Then
+    
+        ' Gets the actual layer count from the string (ex. 4545-3L would return 3) in the partial cell
+        layersBehind = CInt(getPartialLayersFromCell(proposedCell))
+        Range(proposedCell).Select
+        
+        'This is used to check if a triple stack would cause overextend
+        fullSkidColOverExtend = checkOverExtend(getOpposingColNum(ActiveCell.Column), curStoreNum, numFullSkids, 0, remainingKegs, kegComment)
+        
+        ' If a triple stack is possible with the delivery after this one, use OFFSET placement
+            ' Must add up to < 8 Layers and be > 4 Layers, maximum num of different partials on a stack is 3
+        If layersBehind + partialLayers + futurePartialLayers < 8 And remainingKegs = 0 _
+        And partialLayers > 0 And layersBehind > 0 And futurePartialLayers > 0 _
+        And Not overExtends(fullSkidColOverExtend, getOpposingColNum(ActiveCell.Column)) _
+        And InStr(ActiveSheet.Name, "Default") = 0 Then
+        
+            tripleStack = True
+            ' Use offset partial placement to save room for the third delivery in the stack (partials on one side, fulls on other)
+                'This stacks the partial on one side, and returns the first cell on OTHER side where the FULL skids can be placed
+            fullSkidStartCell = offsetPartialPlace(proposedCell, curStoreNum, partialLayers, numFullSkids, tripleStack, remainingKegs, kegComment)
+            
+            If fullSkidStartCell <> "err" Then
+                partialPlaced = True ' done by offsetPartialPlace
+                
+                ' If the partial will not be more that 2 cells from the full skids, allow this placement
+                If Abs(Range(fullSkidStartCell).Row - (getColLength(ActiveCell.Column) + 3)) <= 2 _
+                Or Abs(Range(fullSkidStartCell).Row + numFullSkids - (getColLength(ActiveCell.Column) + 3)) <= 2 Then
+                    proposedCell = fullSkidStartCell ' cell to start placing fulls
+                    Range(proposedCell).Select
+                Else
+                    proposedCell = getColLetter(ActiveCell.Column) & CStr(ActiveCell.Row + 1)
+                    Range(proposedCell).Select
+                End If
+            End If
+
+        ' If only a 2-stack is possible, just place the whole delivery on the side where partial can be stacked
+        ElseIf partialLayers > 0 And isLegalStack(layersBehind + partialLayers, remainingKegs, kegComment, proposedCell) > 0 Then
+            
+            success = stackPartials(curStoreNum, partialLayers, numFullSkids, proposedCell, tripleStack, remainingKegs, kegComment)
+            
+            If success = 1 Then
+                partialPlaced = True
+            End If
+        End If
+    End If
+    
+    ' This offsets the partial to the rear of the trailer for the second last delivery IF it would need a BW otherwise
+    If Not partialPlaced And (TOTAL_DELIVS - DELIVS_PLACED = 2 Or TOTAL_DELIVS - DELIVS_PLACED = 3) Then  ' And TOTAL_DELIVS - DELIVS_PLACED = 2 Then
+    
+        offsetPartialOverExtend = checkOverExtend(getOpposingColNum(ActiveCell.Column), curStoreNum, 0, partialLayers, remainingKegs, kegComment) - numFullSkids
+        Range(proposedCell).Select
+        
+        startCell = getColLetter(getOpposingColNum(ActiveCell.Column)) & getColLength(getOpposingColNum(ActiveCell.Column)) + 4
+        behindStartCell = getColLetter(getOpposingColNum(ActiveCell.Column)) & getColLength(getOpposingColNum(ActiveCell.Column)) + 3
+        layersBehindStartCell = getPartialLayersFromCell(behindStartCell)
+        
+        ' This IF applies to only the second-last placement, and places a limit on how far the partial can be from it's full skids (MAX 2 cells away vertically)
+        If Not overUnderExtends(offsetPartialOverExtend, getOpposingColNum(ActiveCell.Column)) And layersBehindStartCell = 0 _
+        And partialLayers < 5 Then
+            
+            success = stackPartials(curStoreNum, partialLayers, numFullSkids, startCell, False, remainingKegs, kegComment)
+            If success = 1 Then
+                partialPlaced = True
+            End If
+        
+        ElseIf isLegalStack(partialLayers + layersBehindStartCell, remainingKegs, kegComment) > 0 And partialLayers < 5 Then
+            success = stackPartials(curStoreNum, partialLayers, numFullSkids, behindStartCell, False, remainingKegs, kegComment)
+            If success = 1 Then
+                partialPlaced = True
+            ElseIf Not IsEmpty(Range(proposedCell)) Then
+                proposedCell = startCell
+            End If
+        End If
+    
+    ElseIf Not IsEmpty(ActiveCell) And Not BSP_used Then
+        ' Now that the partial has been placed, start placing fulls in the next cell down
+        proposedCell = getColLetter(ActiveCell.Column) & ActiveCell.Row + 1
+    End If
+    
+    ' If stacked already, do not consider the partial skid when trying to prevent overflow
+    If partialPlaced Then
+        plusPartial = 0
+    End If
+    
+    
+    ' If the partial was stacked, it will now select the next free space in front
+    If TOTAL_DELIVS - DELIVS_PLACED = 1 And BSP_used And partialPlaced Then
+        smartPlace = 1
+        Exit Function ' End the function if it just placed the last deliv to save time
+        
+    ElseIf BSP_used And TOTAL_DELIVS - DELIVS_PLACED <> 1 Then
+        proposedCell = chooseColumn(curStoreNum, 0, 1, futurePartialLayers, futureFullSkids, remainingKegs, kegComment)
+    End If
+    
+    If proposedCell <> "err" Then
+        Range(proposedCell).Select
+    Else
+        Exit Function
+    End If
+    
+    ' If there are NO full skids, only partial, and it wasn't stacked:
+    If numFullSkids = 0 And partialPlaced = False And partialLayers > 0 Then
+    
+        ' Place the partial in proposedCell
+        success = stackPartials(curStoreNum, partialLayers, 0, ActiveCell.Address, False, remainingKegs, kegComment)
+        
+        If success = 1 Then
+            partialPlaced = True
+        End If
+        
+        ' A comment is added to this cell to indicate that it should NOT be stacked on
+        If Not ActiveCell.Comment Is Nothing Then
+            ActiveCell.Comment.Delete
+        End If
+        ActiveCell.AddComment "DO NOT STACK ON: " & CStr(curStoreNum)
+        
+    ElseIf Not BSP_used And numFullSkids > 0 Then
+        ' If there ARE full skids, the first one is placed here
+        ActiveCell.Value = curStoreNum
+        
+    End If
+    
+    ' Converts the col NUMBER into respective LETTER
+    curCol = getColLetter(ActiveCell.Column)
+        
+    ' Now, place THE REST of the full skids for this delivery in a vertical row
+    I = 1 ' Keeps track of fulls placed so far. One skid was just placed...
+    
+    ' Places more skids WHILE the selected store is still the same AND while there are still skids to place
+    ' AND bothSidePlace was not already used AND if placement does not overflow the truck
+    Do While ActiveCell.Value = curStoreNum And I < numFullSkids And BSP_used = False And curRow < 17
+    
+        curRow = ActiveCell.Row
+        proposedCell = curCol & CStr(curRow + 1)
+        
+        ' If this skid doesn't go past the end of the trailer
+        If curRow + 1 < 17 Then
+        
+            Range(proposedCell).Select
+            ActiveCell.Value = curStoreNum
+ 
+            I = I + 1
+        Else
+            ' The trailer will overflow; print error.
+            RET = displayError(4, ActiveCell.Address)
+            smartPlace = 0
+            Exit Function
+        End If
+    Loop
+    
+    curRow = ActiveCell.Row + 1 ' iterate to next cell down in case partial STILL not placed
+    
+    If partialPlaced = False And partialLayers > 0 And BSP_used = False Then
+        ' No legal stack behind, so simply place partial after the full skids
+        proposedCell = curCol & CStr(curRow)
+        
+        If curRow < 17 Then
+        
+            Range(proposedCell).Select
+            
+            If remainingKegs = 0 Then ' No kegs, just place partial
+                ActiveCell.Value = curStoreNum & "-" & CStr(partialLayers) & "L"
+            ElseIf isLegalStack(partialLayers, remainingKegs, kegComment, ActiveCell.Address) <> 0 Then ' If there are STILL unplaced kegs, and can stack on the partial
+                ActiveCell.Value = curStoreNum & "-" & CStr(partialLayers) & "L+" & remainingKegs & "KEGS" ' place partial and kegs together
+                ActiveCell.AddComment (kegComment)
+                remainingKegs = 0
+            Else ' There are kegs, but can't be stacked on this partial.
+                ' Just place partial and iterate to next best cell (using chooseColumn) to place Kegs later
+                ActiveCell.Value = curStoreNum & "-" & CStr(partialLayers) & "L"
+                kegCell = chooseColumn(curStoreNum, 0, 0, futurePartialLayers, futureFullSkids, remainingKegs, kegComment)
+                Range(kegCell).Select
+            End If
+        Else
+            ' The trailer will overflow; print error.
+            RET = displayError(4, ActiveCell.Address)
+            smartPlace = 0
+            Exit Function
+        End If
+        
+    End If
+    
+    ' If everything else is placed except the kegs:
+    If remainingKegs > 0 Then
+        ' Place directly in next cell if it's available
+        If remainingKegs > 16 Then
+            t = placeManyKegs(curStoreNum, remainingKegs, kegComment, curCol & ActiveCell.Row + 1, futurePartialLayers, futureFullSkids)
+        
+        ElseIf ActiveCell.Row < 16 And Not IsEmpty(ActiveCell) And IsEmpty(Range(getColLetter(ActiveCell.Column) & ActiveCell.Row + 1)) Then
+            Range(curCol & ActiveCell.Row + 1).Select
+            ActiveCell.Value = curStoreNum & " " & remainingKegs & "KEGS"
+            remainingKegs = 0
+        ElseIf ActiveCell.Row = 16 Then
+            ' The very next cell down is past the end of trailer. Try to get another empty cell with chooseColumn
+            kegCell = chooseColumn(curStoreNum, 0, 0, futurePartialLayers, futureFullSkids, remainingKegs, kegComment)
+            
+            If kegCell <> "err" And IsEmpty(Range(kegCell)) Then
+                ActiveCell.Value = curStoreNum & " " & remainingKegs & "KEGS"
+                remainingKegs = 0
+            Else
+                ' Trailer is full! Force kegs onto stack and print error.
+                ActiveCell.Value = curStoreNum & "+" & remainingKegs & "KEGS" & ActiveCell.Value
+                trash = displayError(4, ActiveCell.Address)
+                remainingKegs = 0
+            End If
+        ElseIf IsEmpty(ActiveCell) Then
+            ActiveCell.Value = curStoreNum & " " & remainingKegs & "KEGS"
+            remainingKegs = 0
+        End If
+   
+        If remainingKegs = 0 Then
+            If ActiveCell.Comment Is Nothing Then
+                ActiveCell.AddComment (kegComment)
+            End If
+        End If
+    End If
+    
+    If remainingKegs > 0 Then ' If kegs STILL not placed; Error
+        displayError (7)
+    Else
+        kegComment = ""
+    End If
+    
+    partialPlaced = False   ' reset to false for next delivery
+    BSP_used = False        ' reset to false for next delivery
+    
+    smartPlace = success
+End Function
+
+
+
+
+' Takes the number of skids and leftover layers of one delivery, and
+' Selects the best Column to place it in.
+' If a cell with an existing partial is returned, the partial can be stacked here.
+
+'   ARGS:   partialLayers (int) - number of partial layers in this delivery (>= 0)
+'           numFullSkids (int) - number of full skids to be placed for this delivery (>= 0)
+
+'   RET: Returns the cell ID of the cell where the first skid (partial OR full) can be placed
+Function chooseColumn(curStoreNum, partialLayers, numFullSkids, futurePartialLayers, futureFullSkids, ByRef remainingKegs, kegComment)
+    
+    If partialLayers > 0 Then
+        plusPartial = 1
+    Else
+        plusPartial = 0
+    End If
+    
+    ' This factor is used when decisions DO NOT impact the three factors being considered
+    AVG_FACTOR = (EVEN_FACTOR + MIN_BW_FACTOR + FIT_FACTOR) / 3
+    
+    currentPlaceRow = 4
+    currentPlaceCol = "B"
+    proposedCell = currentPlaceCol & CStr(currentPlaceRow)
+
+    colB_points = 0
+    colC_points = 0
+    
+    colB_len = 0
+    colC_len = 0
+    
+    ' Starting from top left pos, and moving down the trailer to look for best placement
+    Range(proposedCell).Select
+    
+    ' gets current length of both trailer columns
+    colB_len = getColLength("B")
+    colC_len = getColLength("C")
+    
+    ' If one of the columns is already FULL, just return the next free spot in the not-full col.
+    If colB_len >= 13 And colC_len < 13 Then
+        colB_points = -10000 * AVG_FACTOR
+    ElseIf colC_len >= 13 And colB_len < 13 Then
+        colC_points = -10000 * AVG_FACTOR
+    End If
+        
+    ' First allocate points for length, so the col with less pallets has more points.
+    colB_points = colB_points + EVEN_FACTOR * (13 - colB_len)
+    colC_points = colC_points + EVEN_FACTOR * (13 - colC_len)
+    
+    colB_startCell = ""
+    colC_startCell = ""
+    
+    ' Caluclates the difference in length between the 2 cols if B got only the next deliv, and C got THE REST
+    colB_overExtension = checkOverExtend(2, curStoreNum, numFullSkids, partialLayers, remainingKegs, kegComment)
+    ' And if C gets next, B gets the rest
+    colC_overExtension = checkOverExtend(3, curStoreNum, numFullSkids, partialLayers, remainingKegs, kegComment)
+    
+    ' If a column overextends the rest of the deliveries with the next store, award EVEN-ness points to other col
+    If (colB_overExtension > 0) And TOTAL_DELIVS - DELIVS_PLACED <> 1 Then
+        colC_points = colC_points + AVG_FACTOR * (colB_len + numFullSkids)
+    End If
+    
+    If (colC_overExtension > 1) And TOTAL_DELIVS - DELIVS_PLACED <> 1 Then
+        colB_points = colB_points + AVG_FACTOR * (colC_len + numFullSkids)
+    End If
+    
+    ' If a column overextends the other side by >5 when next deliv is placed there, award other col points
+    willNeedRebalance_ifB = willNeedDriverToRebalance("B", colB_len, colC_len, numFullSkids, partialLayers)
+    willNeedRebalance_ifC = willNeedDriverToRebalance("C", colB_len, colC_len, numFullSkids, partialLayers)
+    
+    If willNeedRebalance_ifB = 1 Then
+        colC_points = colC_points + AVG_FACTOR * (colB_len + numFullSkids)
+    End If
+    
+    If willNeedRebalance_ifC = 1 Then
+        colB_points = colB_points + AVG_FACTOR * (colC_len + numFullSkids)
+    End If
+    
+    
+    
+    ' If the partial will be too small to stack alone, and it is either the third last or second last to be placed,
+    ' Give points to the longer column, as it is more likely for the small partial to end up at the back (not sandwiched)
+    ' ONLY IF it doesn't illegally overExtend
+    If colB_len > colC_len And partialLayers < 5 And partialLayers > 0 And TOTAL_DELIVS - DELIVS_PLACED <= 4 And TOTAL_DELIVS - DELIVS_PLACED > 1 Then
+    
+        If (colB_overExtension = -1 Or colB_overExtension = 0) Then
+            colB_points = colB_points + (5 - partialLayers) * MIN_BW_FACTOR
+        End If
+        
+    ElseIf colC_len > colB_len And partialLayers < 5 And partialLayers > 0 And TOTAL_DELIVS - DELIVS_PLACED <= 4 And TOTAL_DELIVS - DELIVS_PLACED > 1 Then
+
+        If (colC_overExtension = 1 Or colC_overExtension = 0) Then
+            colC_points = colC_points + (5 - partialLayers) * MIN_BW_FACTOR
+        End If
+        
+    End If
+    
+    ' If this is ONE OF THE FIRST DELIVS PLACED and will not over-extend by the end..
+    If (DELIVS_PLACED < 4) And colB_overExtension <= 0 And Not (partialLayers = 0 And remainingKegs > 0) Then
+        ' Give points to column B if not too many skids are successively in B
+        If colB_len + numFullSkids < bothSideThreshold / 7 Or colB_len <= colC_len + futureFullSkids Then
+            colB_points = colB_points + (numFullSkids + (6 - colB_len + colC_len)) * AVG_FACTOR
+        End If
+            
+    End If
+    
+    ' Now award points based on the potential stacks that can be made at the end of each col
+    
+    ' FIRST THIS IS DONE FOR COLUMN B
+    colB_points = colB_points + getColStackPoints("B", partialLayers, numFullSkids, futurePartialLayers, colB_startCell, remainingKegs, kegComment)
+    
+    ' NEXT IT IS DONE FOR COLUMN C
+    colC_points = colC_points + getColStackPoints("C", partialLayers, numFullSkids, futurePartialLayers, colC_startCell, remainingKegs, kegComment)
+    
+    ' Returns the Cell address of the EITHER the FIRST FREE SPACE in the optimal column
+    ' OR the PARTIAL SKID at the end of the chosen column if a stack is possible.
+    If colB_points > colC_points And InStr(colB_startCell, "17") = 0 Then
+        proposedCell = colB_startCell
+
+    ElseIf colB_points < colC_points And InStr(colC_startCell, "17") = 0 Then
+        proposedCell = colC_startCell
+
+    ElseIf colB_points = colC_points Then
+
+        proposedCell = colC_startCell
+    Else
+        RET = displayError(4, colB_startCell) ' OVERFLOW!
+        chooseColumn = "err"
+        Exit Function
+    End If
+    
+    chooseColumn = proposedCell
+End Function
+
+' getColStackPoints calculates points to award to "col" column based on minimizing BWs, creating stacks, and keeping the sides even length
+'   ARGS:   col (string) - Either "B"/2 or "C"/3. Col to calculate poitns for
+'           partialLayers, numFullSkids, futurePartialLayers (int) - number of partial layers for this and next deliv, and full skids for this deliv
+'           col_startCell - cell given as the proposed cell to start placement. ByRef so this function can select this cell if a stack is found
+'           remainingKegs - # of kegs still to be placed for this deliv
+'           kegComment - comment given for these kegs
+
+'   RET:    (int) - number of points awarded to the given column for stack
+Function getColStackPoints(col, partialLayers, numFullSkids, futurePartialLayers, ByRef col_startCell, ByRef remainingKegs, kegComment)
+
+    opposing_col = ""
+
+    If IsNumeric(col) Then
+        col = getColLetter(col)
+    End If
+    
+    If col = "B" Then
+        opposing_col = "C"
+    Else
+        opposing_col = "B"
+    End If
+    
+    col_len = getColLength(col)
+    opposing_col_len = getColLength(opposing_col)
+    col_points = 0
+    
+    col_startCell = col & 4 + col_len
+    col_behindStartCell = col & 3 + col_len
+    
+    If InStr(Range(col_behindStartCell).Value, "B/W") > 0 Or Range(col_behindStartCell).Row = 3 Then
+        col_behindStartCell = col_startCell
+    End If
+    
+    ' Select the cell BEHIND the first empty to gain insight on stacking...
+    Range(col_behindStartCell).Select
+    
+    ' Isolating the tier count for the partial behind
+    partialLayersBehind = getPartialLayersFromCell(ActiveCell.Address)
+    numKegsBehind = getNumKegsFromCell(ActiveCell.Address)
+    commentBehind = getCellComment(ActiveCell.Address)
+
+    If ActiveCell.Value Like "*-*" And partialLayersBehind <= 5 And remainingKegs = 0 Then
+    
+        ' FIRST check if a triple stack will be possible, and award heavily to this col if it's < 8 & > 5 layers
+        If partialLayersBehind > 0 And partialLayers > 0 And futurePartialLayers > 0 _
+        And partialLayersBehind + partialLayers + futurePartialLayers < 8 Then
+            
+            ' If there are no kegs behing, or the stack could support the number of kegs
+            If InStr(ActiveCell.Value, "KEG") = 0 Or partialLayersBehind + partialLayers + futurePartialLayers < 6 Then
+                
+                col_points = col_points + FIT_FACTOR * (partialLayersBehind + partialLayers + futurePartialLayers)
+                col_points = col_points + MIN_BW_FACTOR * (partialLayersBehind + partialLayers + futurePartialLayers)
+                
+                col_startCell = col_behindStartCell
+            End If
+        ' NEXT check if a double stack is possible with the partial behind, and either THIS DELIV's PARTIAL (award points) or NEXT DELIV's PARTIAL (take points)
+        ElseIf partialLayers > 0 And partialLayersBehind > 0 And partialLayersBehind + partialLayers + (numKegsBehind / 4) < 8 Then
+        
+            'MsgBox ("B should be less:  " & col_points)
+            stackNowStatus = isLegalStack(partialLayersBehind + partialLayers, numKegsBehind, commentBehind, ActiveCell.Address)
+            stackNextStatus = isLegalStack(partialLayersBehind + futurePartialLayers, numKegsBehind, commentBehind, ActiveCell.Address)
+            alternativeStackStatus = isLegalStack(partialLayers + futurePartialLayers, remainingKegs, kegComment, ActiveCell.Address)
+        
+            ' If this is the last deliv, and it will cause an over-extended row then this is skipped; no points are awarded here
+            If Not (TOTAL_DELIVS - DELIVS_PLACED = 1 And col_len > opposing_col_len + numFullSkids) Then
+                col_points = col_points + FIT_FACTOR * (partialLayersBehind + partialLayers) ' Points given based on stack height with THIS DELIV's partial
+            End If
+            
+            If stackNextStatus = 1 Then
+                col_points = col_points - ((FIT_FACTOR + MIN_BW_FACTOR) / 2) * (partialLayersBehind + futurePartialLayers) ' Points removed based on stack height with NEXT DELIV's partial
+            End If
+            
+            ' If this stack is already > 4L and the next partial needs more layers to avoid BW, take points from this col
+            If partialLayersBehind > 4 And futurePartialLayers < 5 And alternativeStackStatus = 1 Then
+                col_points = col_points - MIN_BW_FACTOR * (partialLayersBehind + (8 - (partialLayers + futurePartialLayers)))
+            ElseIf partialLayersBehind <= 4 And stackNowStatus = 1 Then
+                col_points = col_points + MIN_BW_FACTOR * (8 - (partialLayersBehind + partialLayers))
+            End If
+            
+            ' If a double stack WITHOUT BW can be made NOW but NOT LATER, points to this col
+            If stackNowStatus = 1 And stackNextStatus <> 1 Then
+                col_points = col_points + MIN_BW_FACTOR * (8 - (partialLayersBehind + partialLayers))
+                
+            ' If a double stack WITHOUT BW can be made LATER but NOT NOW, points taken from this col
+            ElseIf stackNextStatus = 1 And stackNowStatus <> 1 Then
+                col_points = col_points - MIN_BW_FACTOR * (8 - (partialLayersBehind + futurePartialLayers))
+                
+            ' If a stack without BW can be made either with THIS or NEXT deliv, give pts for THIS stack size, take for NEXT
+            ElseIf stackNowStatus = 1 And stackNextStatus = 1 Then
+                col_points = col_points + MIN_BW_FACTOR * (8 - (partialLayers - futurePartialLayers))
+            End If
+            
+
+            ' If a stack is IMPOSSIBLE with NEXT partial, give FIT points to this col for this stack
+            If stackNowStatus <> 0 And stackNextStatus = 0 Then
+                col_points = col_points + FIT_FACTOR * (partialLayersBehind + partialLayers)
+            
+            ' If a stack is IMPOSSIBLE with NOW partial, take away FIT points from this col for this stack
+            ElseIf stackNextStatus <> 0 And stackNowStatus = 0 Then
+                col_points = col_points - FIT_FACTOR * (partialLayers + futurePartialLayers)
+                
+            ' If a stack is POSSIBLE for both NOW AND NEXT, give points for now, take for next for FIT
+            ElseIf stackNowStatus <> 0 And stackNextStatus <> 0 Then
+                col_points = col_points + FIT_FACTOR * (partialLayersBehind + partialLayers - futurePartialLayers)
+            End If
+            
+            col_startCell = col_behindStartCell
+            
+        ' FINALLY if no stack can be made with the partial behind this round, and it would need a BW:
+        ElseIf ((partialLayersBehind < 5 And numKegsBehind = 0) Or partialLayers < 4) And Not overExtends(opposing_col_overExtend, opposing_col) Then
+            'subtract points to make BW use less likely.
+            col_points = col_points - MIN_BW_FACTOR * (7 - partialLayersBehind)
+        End If
+        
+    ElseIf remainingKegs > 0 Then ' if there are kegs,
+    
+        ' Check if stacking here with kegs would be allowed
+        stackWithKegsStatus = isLegalStack(partialLayersBehind + partialLayers, remainingKegs, kegComment, ActiveCell.Address)
+            
+        If stackWithKegsStatus = 1 And (partialLayersBehind > 0 Or IsEmpty(ActiveCell)) Then ' This means it CAN stack, and NO BW is needed!
+            col_points = col_points + MIN_BW_FACTOR * (remainingKegs)
+            col_points = col_points + FIT_FACTOR * (partialLayersBehind + partialLayers)
+            col_startCell = col_behindStartCell
+        ElseIf stackWithKegsStatus = 2 And (partialLayersBehind > 0 Or IsEmpty(ActiveCell)) Then ' Legal, but needs BW
+            col_points = col_points + FIT_FACTOR * (partialLayersBehind + partialLayers)
+            col_startCell = col_behindStartCell
+        Else ' Stack NOT LEGAL!
+            ' Take points away, extra if it would block a < 5L partial
+            If partialLayersBehind < 5 And numKegsBehind = 0 And partialLayersBehind <> 0 Then
+                col_points = col_points - MIN_BW_FACTOR * (partialLayersBehind + partialLayers)
+            End If
+            If partialLayers > 0 Then
+               col_points = col_points - FIT_FACTOR * (partialLayersBehind + partialLayers)
+            End If
+        End If
+    End If
+
+    getColStackPoints = col_points
+
+End Function
+
+
+
+' This function returns the length of the column (occupied cells) given as arg.
+    ' ARG: col - Either  'B' or 'C' (/'b' or 'c') or 2 / 3  representing the
+    ' trailer column to return the length of
+    
+    ' RET: (int) the 'length' of the column (in rows) that is signified by "col"
+Function getColLength(col)
+    ' Capitalize the Column idicator (maybe useless)
+    If col = "b" Or col = 2 Then
+        col = "B"
+    ElseIf col = "c" Or col = 3 Then
+        col = "C"
+    End If
+    
+    colLen = 0
+    
+    curReadRow = 4
+    curReadCol = CStr(col)
+    curReadCell = curReadCol & CStr(curReadRow)
+    
+    Do While (Not IsEmpty(Range(curReadCell)))
+    
+        colLen = colLen + 1
+        
+        curReadRow = curReadRow + 1
+        curReadCell = curReadCol & CStr(curReadRow)
+        
+    Loop
+    
+    ' The length of Column "col" is returned by this function.
+    getColLength = colLen
+
+End Function
+
+
+' This function distributes a delivery accross both sides of the truck so that the
+' columns have equal length or 1 skid away from equal. Places partial AND full skids.
+'   ARGS:   firstCell - The cell address for the first skid that will be placed
+'           storeNum - The store number of the delivery being placed
+'           partialLayers (int) - number of partial layers in this delivery (>= 0)
+'           numFullSkids (int) - number of full skids to be placed for this delivery (>= 0)
+
+'   RET:    1 - operation was successful
+'           0 - operation failed
+'           -1 - look outside, pigs might be flying
+Function bothSidePlace(storeNum, partialLayers, numFullSkids, futurePartialLayers, futureFullSkids, ByRef remainingKegs, kegComment)
+
+    checkRow = 4
+    
+    partialPlaced = False
+    
+    numPlaced = 0
+    
+    ' This section STACKS the partial layers for this delivery if it has partials
+    ' Does NOT do this for the last deliv, as the partial should not be stacked unless it saves BWs or prevents un-evenness
+    If partialLayers > 0 Then
+        ' If we have partial layers, use chooseCol to decide if it should be stacked on an end-partial
+        stackCell = chooseColumn(storeNum, partialLayers, numFullSkids, futurePartialLayers, futureFullSkids, remainingKegs, kegComment)
+        
+        If Range(stackCell).Value Like "*-*" Then ' If it returns a cell with a partial, it CAN be stacked here!
+        
+            layersInStackCell = getPartialLayersFromCell(stackCell)
+            
+            thisColLen = getColLength(Range(stackCell).Column)
+            opposingColLen = getColLength(getOpposingColNum(Range(stackCell).Column))
+            thisColOverExtension = checkOverExtend(Range(stackCell).Column, storeNum, numFullSkids, partialLayers, remainingKegs, kegComment)
+            opposingColOverExtension = checkOverExtend(getOpposingColNum(Range(stackCell).Column), storeNum, numFullSkids, partialLayers, remainingKegs, kegComment)
+            
+            If TOTAL_DELIVS - DELIVS_PLACED = 1 Then
+                ' This handles placing the LAST delivery's partial. Only stacks if saves BW
+                If (thisColLen <= opposingColLen And layersInStackCell < 5) _
+                Or (opposingColOverExtension > 0 And Range(stackCell).Column = 2 And layersInStackCell < 5) _
+                Or (opposingColOverExtension > 1 And Range(stackCell).Column = 3 And layersInStackCell < 5) Then
+                    success = stackPartials(storeNum, partialLayers, numFullSkids, stackCell, False, remainingKegs, kegComment)
+                End If
+                
+                
+            Else
+                success = stackPartials(storeNum, partialLayers, numFullSkids, stackCell, False, remainingKegs, kegComment)
+            End If
+            
+            If success = 1 Then
+                partialPlaced = True
+            End If
+        End If
+    Else
+        ' If there is no partial for this delivery, set it to already placed.
+        partialPlaced = True
+    End If
+    
+    colC_len = getColLength("C")
+    colB_len = getColLength("B")
+    
+    ' Now, go through each cell from top to bottom, placing full skids in empty spots as they're found
+    Do While (numPlaced < numFullSkids And checkRow < 17)
+    
+        ' If NOT the last skid, place them in B, C, B, so on..
+        ' Last skid should go in Col C if the columns can't be equal length.
+        B_cell = Range("B" & checkRow)
+        C_cell = Range("C" & checkRow)
+        
+        B_partial = getPartialLayersFromCell(Range("B" & checkRow).Address)
+        C_partial = getPartialLayersFromCell(Range("C" & checkRow).Address)
+        
+        If IsEmpty(B_cell) And IsEmpty(C_cell) Then
+            ' This next part makes sure last deliv isn't spread across both cols (if not necessary for balance)
+            If TOTAL_DELIVS - DELIVS_PLACED = 2 And numFullSkids - numPlaced = 1 _
+            And ((futureFullSkids + colC_len) - (colB_len + 1) = 1 And futurePartialLayers = 0 _
+            Or (futureFullSkids + colC_len) - (colB_len + 1) = 0 And futurePartialLayers > 0) Then
+                
+                Range("B" & checkRow).Select ' both cells empty, place in C by default
+                ActiveCell.Value = storeNum
+                numPlaced = numPlaced + 1
+                colB_len = colB_len + 1
+            Else
+                Range("C" & checkRow).Select ' both cells empty, place in C by default
+                ActiveCell.Value = storeNum
+                numPlaced = numPlaced + 1
+                colC_len = colC_len + 1
+            End If
+            
+        ElseIf IsEmpty(B_cell) Then
+            Range("B" & checkRow).Select ' Only B empty, place in B
+            ActiveCell.Value = storeNum
+            numPlaced = numPlaced + 1
+            colB_len = colB_len + 1
+            
+        ElseIf IsEmpty(C_cell) Then
+            Range("C" & checkRow).Select ' Only C empty, place in C
+            ActiveCell.Value = storeNum
+            numPlaced = numPlaced + 1
+            colC_len = colC_len + 1
+        
+        ' If B has a partial legal to stack on, and this partial has not been stacked yet
+        ElseIf B_partial > 0 And isLegalStack(B_partial + partialLayers, numKegs, kegComment, "B" & checkRow) > 0 And checkRow = getColLength("B") + 3 And Not partialPlaced Then
+            success = stackPartials(storeNum, partialLayers, numFullSkids, Range("B" & checkRow).Address, False, remainingKegs, kegComment) ' stack partial on B's partial
+            If success = 1 Then
+                partialPlaced = True
+            Else
+                checkRow = checkRow + 1
+            End If
+        ' If C has a partial legal to stack on, and this partial has not been stacked yet
+        ElseIf C_partial > 0 And isLegalStack(C_partial + partialLayers, numKegs, kegComment, "C" & checkRow) > 0 And checkRow = getColLength("C") + 3 And Not partialPlaced Then
+            success = stackPartials(storeNum, partialLayers, numFullSkids, Range("C" & checkRow).Address, False, remainingKegs, kegComment) ' stack partial on C's partial
+            If success = 1 Then
+                partialPlaced = True
+            Else
+                checkRow = checkRow + 1
+            End If
+        Else
+            ' both B and C cell are full, go to next row down...
+            checkRow = checkRow + 1
+        End If
+        
+    Loop
+    
+    ' IF ALL full skids have been placed, but partial has not, place partial in EMPTY available spot
+    Do While partialPlaced = False And partialLayers > 0 And checkRow < 17
+        
+        B_cell = Range("B" & checkRow)
+        C_cell = Range("C" & checkRow)
+        
+        If IsEmpty(B_cell) And IsEmpty(C_cell) Then
+            ' BOTH C and B cells are free. Check if placing the partial in each col, will cause over / under extension
+            
+            ' THIS IS DONE TO ATTEMPT TO KEEP THE LAST 2 DELIVERIES IN ONE COLUMN INSTEAD OF BOTH SIDES
+            ' If placing in B would cause it to be longer than C, or 2 cells shorter than C, place partial in col. C
+            If overUnderExtends(checkOverExtend(2, storeNum, 0, partialLayers, remainingKegs, kegComment), "B") And TOTAL_DELIVS - DELIVS_PLACED = 2 Then
+                success = stackPartials(storeNum, partialLayers, numFullSkids, "C" & checkRow, False, remainingKegs, kegComment)
+            ' If placing in C would cause it to be 2 cells longer than B, or shorter than B, place partial in col. B
+            ElseIf overUnderExtends(checkOverExtend(3, storeNum, 0, partialLayers, remainingKegs, kegComment), "C") And TOTAL_DELIVS - DELIVS_PLACED = 2 Then
+                success = stackPartials(storeNum, partialLayers, numFullSkids, "B" & checkRow, False, remainingKegs, kegComment)
+            Else
+                ' If it is not the last delivery, and neither col causes over / under extension, place it in C (default)
+                success = stackPartials(storeNum, partialLayers, numFullSkids, "C" & checkRow, False, remainingKegs, kegComment)
+            End If
+            partialPlaced = True
+                
+        ElseIf IsEmpty(B_cell) Then
+            ' ONLY B cell is free. Placing PARTIAL in B
+            success = stackPartials(storeNum, partialLayers, numFullSkids, "B" & checkRow, False, remainingKegs, kegComment)
+            partialPlaced = True
+                
+        ElseIf IsEmpty(C_cell) Then
+            ' ONLY C cell is free. Placing PARTIAL in C
+            success = stackPartials(storeNum, partialLayers, numFullSkids, "C" & checkRow, False, remainingKegs, kegComment)
+            partialPlaced = True
+        Else
+            ' Both cells occupied, go to next row
+            checkRow = checkRow + 1
+        End If
+    Loop
+    
+    If checkRow > 16 Then
+        RET = displayError(4, ActiveCell.Address) ' OVERFLOW!
+        bothSidePlace = 0
+        Exit Function
+    End If
+    
+    bothSidePlace = 1
+End Function
+
+' This function does a placement where the fulls are on a different side than the partial for the given delivery
+' USEFUL FOR setting up a triple stack if one can be made (check this first with placement foresight)
+'   ARGS:   firstCell (str) - string-form address of the first cell offset placement begins (should be a partial)
+'           storeNum (str) - store number for the delivery being placed
+'           partialLayers (int) - number of partial layers in this delivery to stack on firstCell
+'           numFullSkids (int) - number of full skids for this delivery, to palce on opposite side of partial.
+
+'   RET:    (str) - string-form address of the starting cell for the full goods to be placed in one col (done in smartPlace)
+'           0 - The operation failed
+Function offsetPartialPlace(firstCell, storeNum, partialLayers, numFullSkids, tripleStack, ByRef remainingKegs, kegComment)
+
+    Range(firstCell).Select
+    success = stackPartials(storeNum, partialLayers, numFullSkids, firstCell, True, remainingKegs, kegComment)
+
+    If success <> 1 Then
+        displayError (3)
+        offsetPartialPlace = 0
+        Exit Function
+    Else
+        ' Since the partial has been placed, set the return address to the next free cell in the OTHER column.
+        ' Selects the OTHER col (without end partial) to start placing fulls
+        checkCol = getColLetter(getOpposingColNum(ActiveCell.Column))
+        checkRow = 4 + getColLength(checkCol)
+
+        If checkRow <> 17 Then
+            offsetPartialPlace = CStr(checkCol & checkRow)
+        Else
+            offsetPartialPlace = "err" ' to indicate error
+            RET = displayError(4, ActiveCell.Address) ' OVERFLOW!
+        End If
+    End If
+End Function
+
+
+' This function parses the text in a cell, and if there is a partial (indicated by presence of "-")
+' then it returns this integer value. For stacks of two or more partials it SUMS THE STACKED PARTIALS
+' AND RETURNS THE PRE-EXISTING STACK'S HEIGHT
+
+'   ARG:    cellAddress - address of the cell containing a partial, for which the layer count is extracted
+
+'   RET:    Integer number (1-6) representing the layers of the partial in cellAddress
+Function getPartialLayersFromCell(cellAddress)
+
+    If Range(cellAddress).Value Like "*-*" Then
+
+        split1 = Split(Range(cellAddress).Value, "-")
+        
+        numberOfPartials = UBound(split1) - LBound(split1) + 1
+        
+        indexToParse = 0
+        totalLayers = 0
+                
+        Do While indexToParse < numberOfPartials
+            ' If there is an "L" in this string and the char before it is a number...
+            If InStr(split1(indexToParse), "L") > 0 Then  ' This array item is a layer count, not store number
+                charBeforeL = Mid(split1(indexToParse), InStr(split1(indexToParse), "L") - 1, 1)
+                
+                If IsNumeric(charBeforeL) Then
+                
+                    partialLayersBehind = Split(split1(indexToParse), "L")
+                    
+                    ' take the number before the L as layers
+                    If IsNumeric(partialLayersBehind(0)) Then
+                        totalLayers = totalLayers + CInt(partialLayersBehind(0))
+                    Else
+                        getPartialLayersFromCell = 0
+                        Exit Function
+                    End If
+                End If
+                       
+            End If
+            indexToParse = indexToParse + 1
+        Loop
+        
+        getPartialLayersFromCell = CInt(totalLayers)
+
+    Else
+        getPartialLayersFromCell = 0
+
+    End If
+    
+End Function
+
+' This function returns the number of DIFFERENT partial skids on a stack (3 is max)
+Function getNumPartialsOnStack(cellAddress)
+
+    Range(cellAddress).Select
+    rawStr = Range(cellAddress).Value
+    altStr = Replace(rawStr, "-", "~")
+    altStr = Replace(altStr, " ", "~")
+    
+     If InStr(altStr, "~") > 0 Then
+        split1 = Split(altStr, "~")
+        getNumPartialsOnStack = UBound(split1) - LBound(split1)
+    Else
+        getNumPartialsOnStack = 0
+    End If
+
+End Function
+
+' This isolates and returns the number of kegs in a trailer cell
+Function getNumKegsFromCell(cellAddress)
+
+    If InStr(Range(cellAddress).Value, "KEG") > 0 Then
+
+        split1 = Split(Range(cellAddress).Value, "+")
+        split2 = Split(Range(cellAddress).Value, " ")
+        
+        If UBound(split1) > UBound(split2) Then
+            numKegs = Split(split1(1), "K")
+        Else
+            numKegs = Split(split2(1), "K")
+        End If
+        
+        If IsNumeric(numKegs(0)) Then
+            getNumKegsFromCell = CInt(numKegs(0))
+        ElseIf InStr("30L", numKegs(0)) Then
+            getNumKegsFromCell = 32
+        ElseIf InStr("50/58L", numKegs(0)) Then
+            getNumKegsFromCell = 16
+        End If
+    Else
+        getNumKegsFromCell = 0
+
+    End If
+
+End Function
+
+' This function stacks a new partial skid on-top or under an existing partial and formats the cell properly.
+    ' NOTE: This function will not stack more than 3 deliveries' partials
+    
+'   ARGS:   storeNum_newPartial - Store number of the new partial being stacked onto an existing one
+'           partialLayers - number of layers for the newPartial
+'           numFullSkids - number of full skids in this delivery, to determine if the new partial can go on bottom
+'           partialCell - cell address of the existing partial that is already placed
+
+'   RET:    1 - operation was successful
+'           0 - operation failed
+Function stackPartials(storeNum_newPartial, partialLayers, numFullSkids, partialCell, tripleStack, ByRef remainingKegs, kegComment)
+
+    ' First get the # of partial layers & kegs from the cell behind
+    partialLayersBehind = CInt(getPartialLayersFromCell(partialCell))
+    numKegsBehind = getNumKegsFromCell(partialCell)
+    ' Make sure these args are INT values
+    partialLayers = CInt(partialLayers)
+    numFullSkids = CInt(numFullSkids)
+    
+    kegPartial = getNumKegs_Partial(remainingKegs, kegComment)
+    
+    ' If there are kegs in the cell behind, this gets the comment for the kegs behind...
+    If kegComment = "" And numKegsBehind > 0 Then
+        If Not Range(partialCell).Comment Is Nothing Then
+            kegComment = Range(partialCell).Comment.Text ' FOR NOTE
+        ElseIf Not Range(partialCell).CommentThreaded Is Nothing Then
+            kegComment = Range(partialCell).CommentThreaded.Text ' FOR COMMENT
+        End If
+    End If
+
+    Range(partialCell).Select
+
+    ' If Active Cell has a comment that says DO NOT STACK then it should not be stacked on top of, so stack under if <= 7Layers
+    If (partialLayers <= partialLayersBehind + 2 Or numFullSkids = 0) And (ActiveCell.Comment Is Nothing Or BYPASS_UNEVEN_PARTIAL_STACK = True) _
+    And Len(ActiveCell.Value) < 24 And partialLayersBehind > 0 And InStr(ActiveCell.Value, "KEG") = 0 Then
+        ' Places the NEW partial (and / or kegs) ON TOP of the partial behind (new one is lighter / more convenient on top)
+        
+        ' If there are PARTIALS AND KEGS
+        If kegPartial > 0 And isLegalStack(partialLayers, kegPartial, kegComment, partialCell) <> 0 And partialLayers > 0 Then
+            ActiveCell.Value = (CStr(storeNum_newPartial) & "-" & partialLayers & "L+" & kegPartial & "KEGS" & vbNewLine & ActiveCell.Value)
+            ActiveCell.AddComment (kegComment)
+            remainingKegs = remainingKegs - kegPartial
+            kegPartial = 0
+        ElseIf partialLayers = 0 Then ' If there is ONLY KEGS
+            ' No partial layers being stacked on top, only kegs
+            ActiveCell.Value = (CStr(storeNum_newPartial) & " " & kegPartial & "KEGS" & vbNewLine & ActiveCell.Value)
+            ActiveCell.AddComment (kegComment)
+            remainingKegs = remainingKegs - kegPartial
+            kegPartial = 0
+            
+        Else ' If there is ONLY PARTIAL
+            ActiveCell.Value = (CStr(storeNum_newPartial) & "-" & partialLayers & "L" & vbNewLine & ActiveCell.Value)
+        End If
+        
+        If numFullSkids = 0 Then
+            If Not ActiveCell.Comment Is Nothing Then
+                ActiveCell.Comment.Delete
+            End If
+            ' Add this comment if it's an UNEVEN partial
+            ActiveCell.AddComment "DO NOT STACK ON: " & CStr(curStoreNum)
+        End If
+        
+        partialPlaced = True
+    
+    ' If the partial cannot be stacked on top (too big / partial without fulls is behind) then stack BELOW
+    ElseIf partialLayersBehind > 0 And partialLayers > 0 And Len(ActiveCell.Value) < 24 And numFullSkids > 0 _
+    And isLegalStack(partialLayers + partialLayersBehind, kegPartial, kegComment, partialCell) <> 0 Then
+    
+        ActiveCell.Value = (ActiveCell.Value & vbNewLine & CStr(storeNum_newPartial) & "-" & partialLayers & "L")
+        partialPlaced = True
+        
+    ' If there is no existing partial in the given cell, put it there alone
+    ElseIf partialPlaced = False And IsEmpty(ActiveCell) Then
+        
+        ' If there are PARTIALS AND KEGS
+        If kegPartial > 0 And isLegalStack(partialLayers + partialLayersBehind, kegPartial, kegComment, partialCell) <> 0 And partialLayers > 0 Then
+            ActiveCell.Value = CStr(storeNum_newPartial) & "-" & partialLayers & "L+" & kegPartial & "KEGS"
+            ActiveCell.AddComment (kegComment)
+            remainingKegs = remainingKegs - kegPartial
+            kegPartial = 0
+        ElseIf partialLayers = 0 Then ' If there is ONLY KEGS
+            ActiveCell.Value = (CStr(storeNum_newPartial) & " " & kegPartial & "KEGS")
+            ActiveCell.AddComment (kegComment)
+            remainingKegs = remainingKegs - kegPartial
+            kegPartial = 0
+        Else ' If there is ONLY PARTIAL
+            ActiveCell.Value = CStr(storeNum_newPartial) & "-" & partialLayers & "L"
+        End If
+    
+        If numFullSkids = 0 Then
+            If Not ActiveCell.Comment Is Nothing Then
+                ActiveCell.Comment.Delete
+            End If
+            ' Add this comment if it's an UNEVEN partial
+            ActiveCell.AddComment "DO NOT STACK ON: " & CStr(curStoreNum)
+        End If
+        
+        partialPlaced = True
+
+    End If
+    
+    ' Set return value to 1 if the stack was successful.
+    If partialPlaced Then
+        stackPartials = 1
+    Else
+        stackPartials = 0
+    End If
+    
+End Function
+
+
+Function getNumKegs_Partial(numKegs, kegComment)
+
+    If numKegs <= 0 Then
+        getNumKegs_Partial = 0
+        Exit Function
+    End If
+
+    If InStr(kegComment, "30") > 0 And InStr(kegComment, "50") = 0 And InStr(kegComment, "58") = 0 Then
+        getNumKegs_Partial = numKegs Mod 32
+    Else
+        getNumKegs_Partial = numKegs Mod 16
+    End If
+    
+End Function
+
+
+' rangeIsEmpty is a simple function used to check whether a rectangular range of cells is empty (duh)
+    ' ARGS:     fromCell (string) - The cell in the top left corner of the range
+    '               toCell (string) - The cell in the bottom right corner of the range
+    
+    ' RET:      (bool) - True if emtpy, else False
+Function rangeIsEmpty(fromCell, toCell)
+
+    If WorksheetFunction.CountA(Range(fromCell & ":" & toCell)) = 0 Then
+        rangeIsEmpty = True
+    Else
+        rangeIsEmpty = False
+    End If
+End Function
+
+' clearTrailer is used to clear the cells and reset the format of the cells in the trailer section of the ACTIVE sheet when called
+'       RET:    1 - The trailer was successfully cleared
+'                  0 - A problem occured, there is still stuff in the trailer
+Function clearTrailer()
+
+    ' If there are BWs in the input sheet's trailer, do not clear this cell
+    If InStr(Range("C4").Value, "B") <> 0 And InStr(Range("C4").Value, "W") <> 0 Then
+    
+        ' Set the cell format for the trailer section
+        With ActiveSheet.Range("B4, B5:C16")
+            .Font.Size = 16
+            .Value = ""
+            .Interior.ColorIndex = 2
+        End With
+
+        If rangeIsEmpty("B5", "C16") And IsEmpty(Range("B4")) Then
+            clearTrailer = 1
+        Else
+            clearTrailer = 0
+        End If
+        
+    Else
+        With ActiveSheet.Range("B4:C16")
+            .Font.Size = 16
+            .Value = ""
+            .Interior.ColorIndex = 2
+        End With
+        
+        If rangeIsEmpty("B4", "C16") Then
+            clearTrailer = 1
+        Else
+            clearTrailer = 0
+        End If
+        
+    End If
+    
+    
+End Function
+
+' prepareOutputSheet clears and sets the cell format for all relevant cells in the given Output sheet
+Function prepareOutputSheet(sheetName)
+
+    cleared = 0 ' Count number of output sheets that were successfully cleared
+    
+    ' Delete all comments in the trailer area
+    For Each cmt In Worksheets(sheetName).Comments
+        cmt.Delete
+    Next cmt
+    
+    If ALLOW_THREADED_COMMENTS Then
+        For Each cmtT In Worksheets(sheetName).CommentsThreaded
+            cmtT.Delete
+        Next cmtT
+    End If
+    
+    Worksheets(sheetName).Activate
+    cleared = cleared + clearTrailer()
+    
+    Worksheets("Input").Activate
+    
+    If cleared = 1 Then
+        ' first checks that deliveries were pasted to input...
+        If rangeIsEmpty("J6", "N21") Then
+            displayError (1)
+            End ' If not, END
+        Else
+        ' Formats the delivery cells properly
+            With ActiveSheet.Range("J6:N21")
+                .Font.Size = 16
+                .VerticalAlignment = xlCenter
+                .Borders.LineStyle = xlContinuous
+                .Interior.ColorIndex = 2
+            End With
+        End If
+        
+        If Not sheetName = "Input" Then
+        
+            ' Copy the driver name, TRL #, and Time Out from input
+            Worksheets("Input").Range("H4:H6").Copy
+    
+            ' Paste the driver name, TRL # and Time out to Output options
+            Worksheets(sheetName).Range("H4:H6").PasteSpecial (xlPasteValues)
+            
+            
+            ' Copy the delivery list section from input
+            Worksheets("Input").Range("J6:N21").Copy
+            
+            ' Paste the delivery list section to Output options INCLUDING COMMENTS to get keg sizes
+            Worksheets(sheetName).Range("J6:N21").PasteSpecial (xlPasteValues)
+            Worksheets(sheetName).Range("J6:N21").PasteSpecial (xlPasteComments)
+                        
+            ' Copy the BW cell (in trailer) from input
+            Worksheets("Input").Range("C4").Copy
+            
+            ' Put BWs in the front of output trailers if it is in the input sheet
+            Worksheets(sheetName).Range("C4").PasteSpecial (xlPasteValues)
+        End If
+        
+        prepareOutputSheet = True ' success
+    Else
+        displayError (5)
+        prepareOutputSheet = False ' fail
+    End If
+    
+End Function
+
+
+' checkOverExtend checks if adding a delivery to a column (B or C) will cause it to be longer than the other column, even
+' If all remaining deliveries go only in that column.
+'       ARGS:   colNum (int) - Number representing the column that may cause over-extend
+'               curStoreNum (string) - Store number for delivery that may cause over-extend
+'               fullSkids (int) - number of full skids in this delivery
+'
+'       RET:    (int) - number of skids (positive or neg) that this col will be longer than opposing
+Function checkOverExtend(colNum, curStoreNum, fullSkids, partialLayers, remainingKegs, kegComment)
+    Dim proposedCol
+    Dim plusPartial
+    Dim plusKegs
+    
+    If partialLayers > 0 Then
+        plusPartial = 1 ' To indicate the partial might add to this col's length (if no possible stack behind)
+    End If
+    
+    If remainingKegs > 0 Then
+        plusKegs = 1
+    End If
+    
+    
+    ' Translates column number into a letter value
+    proposedCol = getColLetter(colNum)
+    opposingCol = getColLetter(getOpposingColNum(colNum))
+    
+    proposedColLength = getColLength(proposedCol)
+    opposingColLength = getColLength(opposingCol)
+    
+
+    curCheckRow = 6
+    curCheckStoreNumCell = "J" & curCheckRow
+    curCheckLayersCell = "K" & curCheckRow
+    opposingSkids = 0
+    
+    prevPartial = 0
+    curPartial = 0
+    prevLayers = 0
+    
+    ' gets partial behind THIS col's first free spot
+    cellBehindStart = CStr(proposedCol & (proposedColLength + 3))
+    partialLayersBehind = getPartialLayersFromCell(cellBehindStart)
+    
+    ' gets partial behind OTHER col's first free spot
+    cellBehindOpposingStart = CStr(opposingCol & (opposingColLength + 3))
+    prevPartial = getPartialLayersFromCell(cellBehindOpposingStart)
+    
+    ' If a stack can be made with this partial and the one behind, consider it stacked (DON'T increase fullSkids by 1)
+    If isLegalStack(partialLayersBehind + partialLayers, remainingKegs, kegComment, cellBehindStart) > 0 And partialLayersBehind > 0 Then
+        If plusPartial = 1 Then
+            plusPartial = 0
+        End If
+        
+        If plusKegs = 1 Then
+            plusKegs = 0
+        End If
+    End If
+    
+    ' calc what the final length of this col will be with just this deliv added
+    proposedFinalLength = proposedColLength + fullSkids + plusPartial + plusKegs
+    
+    ' Iterate down to the current storeNum being placed
+    Do While (Range(curCheckStoreNumCell).Value <> curStoreNum)
+        curCheckRow = curCheckRow + 1
+        curCheckStoreNumCell = "J" & curCheckRow
+        curCheckLayersCell = "K" & curCheckRow
+    Loop
+    ' Go up to NEXT store num
+    curCheckRow = curCheckRow - 1
+    curCheckStoreNumCell = "J" & curCheckRow
+    curCheckLayersCell = "K" & curCheckRow
+    
+    
+    Do While (curCheckRow > 5) ' calc what the final length of OTHER col will be with the REST of the delivs added there
+        
+        If Not IsEmpty(Range(curCheckLayersCell)) And IsNumeric(Range(curCheckLayersCell).Value) Then
+            layers = CInt(Range(curCheckLayersCell).Value)
+            opposingSkids = opposingSkids + Application.WorksheetFunction.RoundDown(layers / 7, 0)
+            curPartial = layers Mod 7
+            
+            If curPartial > 0 Then
+                ' If a stack would be possible with prev. deliv's partial...
+                If isLegalStack(curPartial + prevPartial, remainingKegs, kegComment) > 0 And prevPartial > 0 And (Range(cellBehindStart).Comment Is Nothing Or layers > 0) Then
+                    prevPartial = 0 ' a stack is possible, indicate that there is no existing partial for NEXT to stack
+                ElseIf isLegalStack(curPartial, remainingKegs, kegComment) > 0 Then
+                    opposingSkids = opposingSkids + 1 ' Stack not possible; add 1 skid to represent new stack-start
+                    prevPartial = curPartial ' no stack, this partial is available for NEXT to stack on
+                Else
+                    opposingSkids = opposingSkids + 1 ' Stack not possible; add 1 skid to represent new stack-start
+                    prevPartial = curPartial ' no stack, this partial is available for NEXT to stack on
+                End If
+            End If
+        End If
+        
+        prevLayers = layers
+        
+        curCheckRow = curCheckRow - 1
+        curCheckStoreNumCell = "J" & curCheckRow
+        curCheckLayersCell = "K" & curCheckRow
+    Loop
+    
+    checkOverExtend = (proposedFinalLength) - (opposingColLength + opposingSkids)
+End Function
+
+
+' Returns true if this column will illegally overextend, or illegally underextend the other col (useful for second last placement)
+'   ARGS:   overExtension (int) - number of rows this col over/under extends
+'           col ("B"/2 or "C"/3)
+
+'   RET:    T/F - True if over/under extends
+Function overUnderExtends(overExtension, col)
+
+    If IsNumeric(col) Then
+        col = getColLetter(col)
+    End If
+    
+    If ((overExtension = 0 Or overExtension = -1) And col = "B") Or _
+        ((overExtension = 0 Or overExtension = 1) And col = "C") Then
+        overUnderExtends = False
+        Exit Function
+    End If
+    
+    overUnderExtends = True
+
+End Function
+
+' Returns true if this column will illegally overextend the other col
+'   ARGS:   overExtension (int) - number of rows this col over/under extends
+'           col ("B"/2 or "C"/3)
+
+'   RET:    T/F - True if overextends
+Function overExtends(overExtension, col)
+
+    If IsNumeric(col) Then
+        col = getColLetter(col)
+    End If
+    
+    If (overExtension > 0 And col = "B") Or (overExtension > 1 And col = "C") Then
+        overExtends = True
+        Exit Function
+    End If
+    
+    overExtends = False
+
+End Function
+
+
+'Checks if the driver will need to rearrange the skids mid-day
+'
+
+'   RET: 1 - Col will be >5 skids longer than other col - needs rebalance
+'        0 - Else
+Function willNeedDriverToRebalance(proposedCol, colB_len, colC_len, numFullSkids, partialLayers)
+
+    Dim plusPartial
+    plusPartial = 0
+    
+    If partialLayers > 4 Then
+        plusPartial = 1
+    End If
+
+
+    If InStr(proposedCol, "B") > 0 _
+    And (colB_len + numFullSkids + plusPartial) - colC_len > 5 Then
+        willNeedDriverToRebalance = 1
+    ElseIf InStr(proposedCol, "C") > 0 And (colC_len + numFullSkids + plusPartial) - colB_len > 5 Then
+        willNeedDriverToRebalance = 1
+    Else
+        willNeedDriverToRebalance = 0
+    End If
+
+    plusPartial = 0
+
+End Function
+
+
+' placeBWs goes through the entire trailer section, and placed BWs under all partials and stacks of partials
+' that have < 5 Layers in total. Also decreases font size of cells that have 3 lines (triple stack or 2-stack and BW.
+' This should be used after all deliveries are already placed.
+Sub placeBWs()
+
+    Dim trlRange As Range, cell As Range
+    
+    Set trlRange = Range("B4:C16")
+    
+    ' loop through each cell in the trailer section
+    For Each cell In trlRange
+    
+        partialLayersHere = getPartialLayersFromCell(cell.Address)
+        numKegsHere = getNumKegsFromCell(cell.Address)
+        cellComment = getCellComment(cell.Address)
+        
+        ' If it is a < 5 layer stack, put BW under partials
+        If partialLayersHere > 0 And partialLayersHere < 30 Then
+            
+            'This gets the number of lines in the cell (num of different stores on the one stack)
+            numPartialsHere = getNumPartialsOnStack(cell.Address)
+            
+            isAtTail = (cell.Row = getColLength(cell.Column) + 3)
+            
+            ' If this stack requires BW, and is not at the end if the trailer...
+            If isLegalStack(partialLayersHere, 0, cellComment, cell.Address) <> 1 And Not isAtTail Then
+                
+                'If the cell will have 3 LINES once BW is placed, make font size = 12pt
+                If numPartialsHere > 1 Or (numPartialsHere = 1 And numKegsHere > 0) Then
+                    cell.Font.Size = 12
+                End If
+                If InStr(cell.Value, "BW") = 0 And numPartialsHere < 3 Then
+                    cell.Value = cell.Value & vbNewLine & "BW"
+                End If
+            ElseIf numPartialsHere > 2 Then
+                cell.Font.Size = 12
+            End If
+            
+        ElseIf numKegsHere <= 6 And numKegsHere > 0 And Not isAtTail Then
+            If Not InStr(cell.Value, "BW") > 0 Then
+                cell.Value = cell.Value & vbNewLine & "BW"
+            End If
+        End If
+        
+    Next cell
+    
+End Sub
+
+
+
+' displayError takes an error code and creates a message box to display the error.
+'       ARGS:   errCode - number representing an error
+'               overflowCellAddress - the address of the last cell in trailer section before overflow error occurs (error(4))
+Function displayError(Optional errCode As Integer, Optional overflowCellAddress)
+
+    redundant = False
+
+    Select Case errCode
+        Case 1 ' EMPTY DELIVERY LIST
+            errMsg = "No deliveries added to Input!" & vbNewLine & "Please paste deliveries before building."
+            
+        Case 2 ' SHEET BUILD FAULT
+            errMsg = "One or more of the sheets did not build properly!" _
+                & vbNewLine & "You may want to change the load and try again!"
+                
+        Case 3 ' PLACEMENT FAULT
+            resp = MsgBox("There was an issue placing this delivery!" & vbNewLine & vbNewLine & _
+            "This may be because there are 3 deliveries with possibly uneven partials in a row." & vbNewLine & _
+            "WOULD YOU LIKE TO TURN OFF THE UNEVEN PARTIAL STACK RESTRICTION AND TRY AGAIN?", vbCritical + vbYesNo, "ERROR(3)")
+            
+            If resp = vbYes Then
+                BYPASS_UNEVEN_PARTIAL_STACK = True
+                AutoBuild
+                End
+            Else
+                resetOutputs
+                End
+            End If
+                
+        Case 4 ' OVERFLOWING DELIVERY
+        
+            ' Only print this error if it hasn't been flagged for this sheet yet
+            If ActiveSheet.Range("B16").Interior.ColorIndex = 3 Or ActiveSheet.Range("C16").Interior.ColorIndex = 3 Then
+                redundant = True
+            End If
+        
+            errMsg = "This route will likely not fit on the trailer." & vbNewLine & _
+            "It is recommended that you count this run on the floor."
+            ' The last cell placed before delivery overflows is highlighted RED
+            With ActiveSheet.Range(overflowCellAddress)
+                .Interior.ColorIndex = 3
+               ' .AddComment "Delivery may not fully fit!"
+            End With
+            
+                
+        Case 5 ' FAILED TO RESET A SHEET
+            errMsg = "There was an issue resetting one or more of the output sheets!"
+            
+        Case 6
+            errMsg = "There was an issue pulling BW skids to the back of the trailer!"
+        
+        Case 7
+            errMsg = "There was an issue placing the large load of kegs!"
+            
+        Case 8
+            errMsg = "There are no items in the trailer section!" & Chr(10) & "Please build the sheets before pulling BWs to back."
+            
+        Case Else
+            errMsg = "An unknown error has occured! Call an Engineer!"
+    End Select
+    
+    If errCode <> 3 And redundant = False Then
+        resp = MsgBox(errMsg, vbCritical, "ERROR(" & errCode & ")")
+    End If
+    redundant = False
+End Function
+
+
+' 2 = B, 3 = C. That is all.
+Function getColLetter(colNum)
+
+    Select Case colNum
+        Case 2
+            colLet = "B"
+        Case 3
+            colLet = "C"
+        Case Else
+            colLet = "err"
+    End Select
+    
+    getColLetter = colLet
+
+End Function
+
+
+' The idea for this function is pretty dumb. Basically supposed to pull partial stacks that need BW
+' and are already close to the back all the way to the back of the trailer, shifting everything before it UP, to reduce BWs used.
+
+' ----- ASK ED IF THIS MAKES ANY SENSE -----
+Sub pullBWskidsToBack()
+
+    If rangeIsEmpty("B4", "C16") Then
+        displayError (8)
+        Exit Sub
+    End If
+
+    colB_len = getColLength("B")
+    colC_len = getColLength("C")
+
+    B_checkRow = colB_len + 3
+    C_checkRow = colC_len + 3
+    
+    B_checkCell = "B" & B_checkRow ' Last item in col B
+    B_endCell = B_checkCell
+    B_endCellPartialLayers = getPartialLayersFromCell(B_endCell)
+    
+    B_endStoreNum = Range(B_checkCell).Value
+    B_curCellStoreNum = B_endStoreNum ' start from this last item
+    
+    Do While B_checkRow > colB_len - 3
+    
+        If InStr(Range("B" & B_checkRow), "BW") > 0 Then
+        
+            BW_skidContents = Mid(Range(B_checkCell).Value, 1, Len(Range(B_checkCell).Value) - 3)
+            
+            BW_cellPartialLayers = getPartialLayersFromCell(B_checkCell)
+            
+            numKegs = getNumKegsFromCell(B_checkCell) ' get number of kegs from the BW cell
+            
+            If numKegs <> 0 And Not Range(B_checkCell).Comment Is Nothing Then
+                kegComment = Range(B_checkCell).Comment ' and keg comment from BW cell
+            End If
+            
+            If B_endCellPartialLayers > 0 Then
+            
+                If isLegalStack(B_endCellPartialLayers + BW_cellPartialLayers, numKegs, kegComment, B_endCell) > 0 And colB_len <> colC_len - 1 Then
+            
+                    Range(B_endCell).Value = BW_skidContents & Chr(10) & Range(B_endCell).Value
+                    BW_skidContents = Range(B_endCell).Value
+
+                    Range("B" & B_checkRow + 1, B_endCell).Copy
+                    Range("B" & B_checkRow, "B" & colB_len + 2).PasteSpecial (xlPasteValues)
+                    Range(B_endCell).Value = ""
+                    placeBWs
+                End If
+                
+            ElseIf Not overExtends(colB_len - colC_len + 1, "B") Then
+                Range("B" & B_checkRow + 1, B_endCell).Copy
+                Range("B" & B_checkRow, "B" & colB_len + 2).PasteSpecial (xlPasteValues)
+                Range("B" & B_checkRow, "B" & colB_len + 2).Font.Size = 16
+                Range(B_endCell).Value = BW_skidContents
+            End If
+        End If
+        
+        B_checkRow = B_checkRow - 1 ' go up to next cell
+        B_checkCell = "B" & B_checkRow
+        B_curCellStoreNum = Range(B_checkCell).Value ' get store num of next cell up
+    Loop
+    
+    C_checkCell = "C" & C_checkRow ' Last item in col C
+    C_endCell = C_checkCell
+    C_endCellPartialLayers = getPartialLayersFromCell(C_endCell)
+    
+    C_endStoreNum = Range(C_checkCell).Value
+    C_curCellStoreNum = C_endStoreNum ' start from this last item
+    
+    Do While C_checkRow > colC_len + 3 - 5
+    
+        If InStr(Range("C" & C_checkRow), "BW") > 0 Then
+            BW_skidContents = Mid(Range(C_checkCell).Value, 1, Len(Range(C_checkCell).Value) - 3)
+            
+            BW_cellPartialLayers = getPartialLayersFromCell(C_checkCell)
+            
+            numKegs = getNumKegsFromCell(C_checkCell) ' get number of kegs from the BW cell
+            
+            If numKegs <> 0 And Not Range(C_checkCell).Comment Is Nothing Then
+                kegComment = Range(C_checkCell).Comment.Text ' and keg comment from BW cell
+            End If
+            
+            If isLegalStack(C_endCellPartialLayers + BW_cellPartialLayers, numKegs, kegComment, C_endCell) > 0 And C_endCellPartialLayers > 0 Then
+            
+                If Not colC_len = colB_len Then
+            
+                    Range(C_endCell).Value = BW_skidContents & Chr(10) & Range(C_endCell).Value
+                    BW_skidContents = Range(C_endCell).Value
+
+                    Range("C" & C_checkRow + 1, C_endCell).Copy
+                    Range("C" & C_checkRow, "C" & colC_len + 2).PasteSpecial (xlPasteValues)
+                    Range(C_endCell).Value = ""
+                    placeBWs
+
+                End If
+            ElseIf Not overExtends(colC_len - colC_len + 1, "C") Then
+                Range("C" & C_checkRow + 1, C_endCell).Copy
+                Range("C" & C_checkRow, "C" & colC_len + 2).PasteSpecial (xlPasteValues)
+                Range("C" & C_checkRow, "C" & colC_len + 2).Font.Size = 16
+                Range(C_endCell).Value = BW_skidContents
+            End If
+        End If
+        
+        C_checkRow = C_checkRow - 1 ' go up to next cell
+        C_checkCell = "C" & C_checkRow
+        C_curCellStoreNum = Range(C_checkCell).Value ' get store num of next cell up
+    Loop
+    
+End Sub
+
+' 2 returns 3, 3 returns 2
+Function getOpposingColNum(colNum)
+
+    If colNum = 2 Then
+        getOpposingColNum = 3
+    Else
+        getOpposingColNum = 2
+    End If
+    
+End Function
+
+
+' Checks if the satck made based on the given info is a legal stack or not
+'   ARGS:   totalLayers, numKegs, kegComment - info for the components of the potential stack
+'           stackCell - proposedCell to place the stack (makes sure it's empty)
+
+'   RET:    2 - This stack is legal, but it will need BWs
+'           1 - This stack is legal, and will NOT need BWs!
+'           0 - This stack is NOT LEGAL
+Function isLegalStack(totalLayers, ByVal numKegs, kegComment, Optional stackCell)
+
+    stackCellComment = ""
+
+    If Not IsMissing(stackCell) Then
+        If Not Range(stackCell).Comment Is Nothing Then
+            If InStr(Range(stackCell).Comment.Text, "DO NOT") > 0 And BYPASS_UNEVEN_PARTIAL_STACK = False And totalLayers = 0 Then
+                isLegalStack = 0 ' If cell has "DO NOT STACK" comment, return 0 & exit fn
+                Exit Function
+            End If
+        End If
+        
+        If numKegs > 0 And InStr(Range(stackCell).Value, "KEG") > 0 Then
+            isLegalStack = 0 ' If cell has "DO NOT STACK" comment, return 0 & exit fn
+            Exit Function
+        End If
+    Else
+        Exit Function
+    End If
+
+
+    ' If no keg information is given, then get keg count and comment from stackCell if address is given
+    If kegComment = "" And Not IsMissing(stackCell) Then
+        If Not Range(stackCell).Comment Is Nothing Then
+            kegComment = Range(stackCell).Comment.Text
+        ElseIf Not Range(stackCell).CommentThreaded Is Nothing Then
+            kegComment = Range(stackCell).CommentThreaded.Text
+        End If
+    End If
+    
+    If numKegs = 0 And Not IsMissing(stackCell) Then
+        numKegs = getNumKegsFromCell(stackCell)
+    End If
+
+    If numKegs = 0 Then
+        If totalLayers < 5 And Len(Range(stackCell).Value) < 24 Then
+            isLegalStack = 2 ' 2 indicates the stack is legal, but will need BWs
+        ElseIf totalLayers < 8 And Len(Range(stackCell).Value) < 24 Then
+            isLegalStack = 1
+        Else
+            isLegalStack = 0
+        End If
+    Else ' If there are kegs...
+        If numKegs <= 6 And totalLayers < 3 Then
+            isLegalStack = 2
+        ElseIf numKegs <= 6 And InStr(kegComment, "50") = 0 And InStr(kegComment, "58") = 0 And totalLayers <= 6 Then
+            isLegalStack = 1
+        ElseIf numKegs <= 6 And (InStr(kegComment, "50") > 0 Or InStr(kegComment, "58") > 0) And totalLayers <= 5 Then
+            isLegalStack = 1
+        ElseIf totalLayers = 0 And numKegs <= 6 Then ' If there are NO LAYERS, only kegs, say it CAN stack
+            isLegalStack = 2
+        ElseIf totalLayers = 0 And Not IsMissing(stackCell) Then
+            If IsEmpty(Range(stackCell)) Then
+                isLegalStack = 1
+            Else
+                isLegalStack = 0
+            End If
+        Else
+            isLegalStack = 0
+        End If
+    End If
+End Function
+
+
+' This function returns the comment in the cell at address = cellAddress
+Function getCellComment(cellAddress)
+    
+    If cellAddress <> "" Then
+        Range(cellAddress).Select
+    Else
+        displayError
+        Exit Function
+    End If
+    
+    If Not ActiveCell.Comment Is Nothing Then
+        getCellComment = ActiveCell.Comment.Text
+    ElseIf ALLOW_THREADED_COMMENTS = True Then
+        If Not ActiveCell.CommentThreaded Is Nothing Then
+            getCellComment = ActiveCell.CommentThreaded.Text
+        Else
+            getCellComment = ""
+        End If
+    Else
+        getCellComment = ""
+    End If
+
+End Function
+
+
+' Silly nonsense function to format keg comments into a certain syntax
+Function getFormattedKegComment(ByVal thisComment)
+    
+    If thisComment <> "" Then
+        
+        thisComment = Replace(thisComment, " - ", "-")
+        thisComment = Replace(thisComment, " x ", "-")
+        thisComment = Replace(thisComment, "x", "-")
+        thisComment = Replace(thisComment, "    ", "-")
+        thisComment = Replace(thisComment, " KEGS", "")
+        thisComment = Replace(thisComment, " KEG", "")
+        thisComment = Replace(thisComment, " L", "L")
+        thisComment = Replace(thisComment, "50/", "")
+        thisComment = Replace(thisComment, "58/", "")
+        thisComment = Replace(thisComment, Chr(10), ",")
+        
+    End If
+    
+    getFormattedKegComment = thisComment
+
+End Function
+
+
+Function placeManyKegs(storeNum, ByRef numKegs, kegComment, proposedCell, futurePartialLayers, futureFullSkids)
+
+    selCel = ActiveCell.Address
+
+    formattedKegComment = getFormattedKegComment(kegComment)
+    numSmallKegs = getNumSmallKegs(formattedKegComment)
+    numBigKegs = getNumBigKegs(formattedKegComment)
+    
+    fullSmallSkids = Application.WorksheetFunction.RoundDown(CInt(numSmallKegs) / 32, 0)
+    leftoverSmalls = numSmallKegs Mod 32
+    
+    fullBigSkids = Application.WorksheetFunction.RoundDown(CInt(numBigKegs) / 16, 0)
+    leftoverBigs = numBigKegs Mod 16
+    
+    ' See if can stack leftover 30Ls on existing partial...
+    proposedLOsmallsCell = chooseColumn(storeNum, 0, 0, futurePartialLayers, futureFullSkids, leftoverSmalls, "30L")
+    If Range(proposedLOsmallsCell).Value Like "*-*" Then
+        partialLayers_stackSmalls = getPartialLayersFromCell(proposedLOsmallsCell)
+        
+        If isLegalStack(partialLayers_stackSmalls, leftoverSmalls, kegComment) > 0 Then
+            success = stackPartials(storeNum, 0, 0, proposedLOsmallsCell, getNumPartialsOnStack(proposedLOsmallsCell) = 2, leftoverSmalls, "30L")
+            If success <> 0 Then
+                leftoverSmalls = 0
+            End If
+        End If
+    End If
+    
+    ' See if can stack leftover 50/58Ls on existing partial...
+    proposedLObigsCell = chooseColumn(storeNum, 0, 0, futurePartialLayers, futureFullSkids, leftoverBigs, "50L")
+    If Range(proposedLObigsCell).Value Like "*-*" Then
+        partialLayers_stackBigs = getPartialLayersFromCell(proposedLObigsCell)
+        
+        If isLegalStack(partialLayers_stackBigs, leftoverBigs, kegComment) > 0 Then
+            success = stackPartials(storeNum, 0, 0, proposedLObigsCell, getNumPartialsOnStack(proposedLObigsCell) = 2, leftoverBigs, "50L")
+            If success <> 0 Then
+                leftoverBigs = 0
+            End If
+        End If
+    End If
+    
+    
+    ' Now places each of the FULL 30L skids
+    Do While fullSmallSkids > 0
+    
+        prop = chooseColumn(storeNum, 0, 0, futurePartialLayers, futureFullSkids, 32, "30L")
+        
+        If Range(prop).Row > 16 Then
+            t = displayError(4, prop)
+            Exit Function
+        End If
+        
+        If IsEmpty(Range(prop)) Then
+            Range(prop).Value = storeNum & " 32-30L KEGS"
+            fullSmallSkids = fullSmallSkids - 1
+        End If
+    Loop
+    
+    ' And each of the FULL 50/58L
+    Do While fullBigSkids > 0
+    
+        prop = chooseColumn(storeNum, 0, 0, futurePartialLayers, futureFullSkids, 16, "50L")
+        
+        If Range(prop).Row > 16 Then
+            t = displayError(4, prop)
+            Exit Function
+        End If
+        
+        If IsEmpty(Range(prop)) Then
+            Range(prop).Value = storeNum & " 16-50/58L KEGS"
+            fullBigSkids = fullBigSkids - 1
+        End If
+    Loop
+    
+    If leftoverSmalls > 0 Then
+        proposedLOsmallsCell = chooseColumn(storeNum, 0, 0, futurePartialLayers, futureFullSkids, leftoverSmalls, "30L")
+        If IsEmpty(Range(proposedLOsmallsCell)) Then
+            Range(proposedLOsmallsCell).Value = storeNum & " " & leftoverSmalls & "KEGS"
+            leftoverSmalls = 0
+        ElseIf InStr(Range(proposedLOsmallsCell).Value, "-") > 0 Then
+            Range(proposedLOsmallsCell).Value = storeNum & " " & leftoverSmalls & "KEGS" & Chr(10) & Range(proposedLOsmallsCell).Value
+            leftoverSmalls = 0
+        Else
+            displayError (7)
+        End If
+    End If
+    
+    If leftoverBigs > 0 Then
+        proposedLObigsCell = chooseColumn(storeNum, 0, 0, futurePartialLayers, futureFullSkids, leftoverBigs, "50L")
+        If IsEmpty(Range(proposedLObigsCell)) Or InStr(Range(proposedLObigsCell).Value, "-") > 0 Then
+            Range(proposedLObigsCell).Value = storeNum & " " & leftoverBigs & "KEGS"
+            leftoverBigs = 0
+        ElseIf InStr(Range(proposedLObigsCell).Value, "-") > 0 Then
+            Range(proposedLObigsCell).Value = storeNum & " " & leftoverBigs & "KEGS" & Chr(10) & Range(proposedLObigsCell).Value
+            leftoverBigs = 0
+        Else
+            displayError (7)
+        End If
+    End If
+    
+    If fullSmallSkids = 0 And fullBigSkids = 0 And leftoverSmalls = 0 And leftoverBigs = 0 Then
+        numKegs = 0 ' There are no kegs left to be placed!
+    End If
+    
+    ' Range(selCel).Select
+        
+End Function
+
+Function getNumSmallKegs(ByVal kegComment)
+    
+    indexToParse = 0
+    
+    If InStr(kegComment, "30L") > 0 Then
+    
+        split1 = Split(kegComment, "-")
+        
+        numKegTypes = UBound(split1) - LBound(split1)
+        
+        If numKegTypes > 1 Then
+        
+            Do While indexToParse < numKegTypes
+                If InStr(split1(indexToParse + 1), "30L") > 0 Then ' This array item is a layer count, not store number
+                    
+                    If indexToParse > 0 Then
+                        split2 = Split(split1(indexToParse), ",")
+                        
+                        If IsNumeric(split2(1)) Then
+                            getNumSmallKegs = split2(1)
+                        Else
+                            getNumSmallKegs = 0
+                            Exit Function
+                        End If
+                    Else
+                        getNumSmallKegs = split1(0)
+                    End If
+                        
+                End If
+                indexToParse = indexToParse + 1
+            Loop
+        Else
+            getNumSmallKegs = split1(0)
+        End If
+    Else
+        getNumSmallKegs = 0
+    End If
+
+End Function
+
+Function getNumBigKegs(ByVal kegComment)
+    indexToParse = 0
+    
+    If InStr(kegComment, "50L") > 0 Or InStr(kegComment, "58L") > 0 Then
+    
+        split1 = Split(kegComment, "-")
+        
+        numKegTypes = UBound(split1) - LBound(split1)
+        
+        numBigKegs = 0
+        
+        If numKegTypes > 1 Then
+            
+            Do While indexToParse < numKegTypes
+                If InStr(split1(indexToParse + 1), "50L") > 0 Or InStr(split1(indexToParse + 1), "58L") > 0 Then ' This array item is a layer count, not store number
+                    
+                    If indexToParse > 0 Then
+                        split2 = Split(split1(indexToParse), ",")
+                        
+                        If IsNumeric(split2(1)) Then
+                            numBigKegs = numBigKegs + split2(1)
+                        Else
+                            getNumBigKegs = 0
+                            Exit Function
+                        End If
+                    ElseIf IsNumeric(split1(0)) Then
+                        numBigKegs = numBigKegs + split1(0)
+                    Else
+                        getNumBigKegs = 0
+                    End If
+                End If
+                indexToParse = indexToParse + 1
+            Loop
+        Else
+            getNumBigKegs = split1(0)
+        End If
+    Else
+        getNumBigKegs = 0
+    End If
+    
+    getNumBigKegs = numBigKegs
+    
+End Function
+
+' resets all output sheets to prepare for next load
+Sub resetOutputs()
+    
+    ' Clear contents of OO-1 sheet (including BW cell)
+    Worksheets("Output - Default").Activate
+    
+    For Each cmt In ActiveSheet.Comments
+        cmt.Delete
+    Next cmt
+    
+    If ALLOW_THREADED_COMMENTS Then
+        For Each cmtT In ActiveSheet.CommentsThreaded
+            cmtT.Delete
+        Next cmtT
+    End If
+    
+    Range("B4:B16,C4:C16,H4:H6,J6:N21").Select
+    Range("J6").Activate
+    With Selection
+        .ClearContents
+        .Interior.ColorIndex = 2
+    End With
+    
+    ' Clear contents of OO-2 sheet
+    Worksheets("Output - Maintain Even Weight").Activate
+    
+    For Each cmt In ActiveSheet.Comments
+        cmt.Delete
+    Next cmt
+    
+    If ALLOW_THREADED_COMMENTS Then
+        For Each cmtT In ActiveSheet.CommentsThreaded
+            cmtT.Delete
+        Next cmtT
+    End If
+    
+    Range("B4:B16,C4:C16,H4:H6,J6:N21").Select
+    Range("J6").Activate
+    With Selection
+        .ClearContents
+        .Interior.ColorIndex = 2
+    End With
+
+    ' Clear contents of OO-3 sheet
+    Worksheets("Output - Compress").Activate
+    
+    For Each cmt In ActiveSheet.Comments
+        cmt.Delete
+    Next cmt
+    
+    If ALLOW_THREADED_COMMENTS Then
+        For Each cmtT In ActiveSheet.CommentsThreaded
+            cmtT.Delete
+        Next cmtT
+    End If
+    
+    Range("B4:B16,C4:C16,H4:H6,J6:N21").Select
+    Range("J6").Activate
+    With Selection
+        .ClearContents
+        .Interior.ColorIndex = 2
+    End With
+    
+    ' Clear contents of OO-4 sheet
+    Worksheets("Output - Minimize BWs").Activate
+    
+    For Each cmt In ActiveSheet.Comments
+        cmt.Delete
+    Next cmt
+    
+    If ALLOW_THREADED_COMMENTS Then
+        For Each cmtT In ActiveSheet.CommentsThreaded
+            cmtT.Delete
+        Next cmtT
+    End If
+    
+    Range("B4:B16,C4:C16,H4:H6,J6:N21").Select
+    Range("J6").Activate
+    With Selection
+        .ClearContents
+        .Interior.ColorIndex = 2
+    End With
+    
+    Worksheets("Input").Activate
+    
+End Sub
+
+' resets output AND input sheets
+Sub fullReset()
+
+    resetOutputs
+    Worksheets("Input").Activate
+    
+    For Each cmt In ActiveSheet.Comments
+        cmt.Delete
+    Next cmt
+    
+    If ALLOW_THREADED_COMMENTS Then
+        For Each cmtT In ActiveSheet.CommentsThreaded
+            cmtT.Delete
+        Next cmtT
+    End If
+    
+    clearTrailer
+    
+    If InStr(Range("C4").Value, "B") = 0 And InStr(Range("C4").Value, "W") = 0 Then
+        Range("C4").Value = ""
+    End If
+    
+    Clear
+
+End Sub
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

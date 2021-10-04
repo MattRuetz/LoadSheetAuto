@@ -1,0 +1,76 @@
+Sub Mail_and_reset()
+
+    ' checks if Load Sheet has name entered, to be added to email subject line
+    If Not IsEmpty(ActiveSheet.Range("H5")) Then
+        email_subject = "Load Sheet: " & Range("H5").Value
+    Else
+        RET = MsgBox("No Driver Name has been given!" & vbNewLine & "Are you sure?", vbExclamation + vbOKCancel)
+        
+        ' No name given, and user doesn't care...
+        If RET = vbOK Then
+            email_subject = "Load Sheet: [No Name]"
+        Else
+            End
+        End If
+    End If
+    
+    
+    '--- Now set up draft and prep to mail ---
+    
+    'First fetch destination address(es) from Settings page
+    addrCellVal = Worksheets("Settings").Range("B2").Value
+    
+    If addrCellVal = "" Or InStr(addrCellVal, "@") <= 0 Then
+        MsgBox ("The email address entered on the Settings page are invalid format!" & vbNewLine & "Please Fix and try again.")
+        End
+    End If
+    
+    
+    Dim wb1 As Workbook
+    Dim TempFilePath As String
+    Dim TempFileName As String
+    Dim FileExtStr As String
+    Dim OutApp As Object
+    Dim OutMail As Object
+
+    'With Application
+    '    .ScreenUpdating = False
+    '    .EnableEvents = False
+    'End With
+
+    Set wb1 = ActiveWorkbook
+
+    'Make a copy of the file/Open it/Mail it/Delete it
+    'If you want to change the file name then change only TempFileName
+    TempFilePath = Environ$("temp") & "\"
+    TempFileName = wb1.Name
+    FileExtStr = "." & LCase(Right(wb1.Name, Len(wb1.Name) - InStrRev(wb1.Name, ".", , 1)))
+
+    wb1.SaveCopyAs TempFilePath & TempFileName & FileExtStr
+
+    Set OutApp = CreateObject("Outlook.Application")
+    Set OutMail = OutApp.CreateItem(0)
+
+    On Error Resume Next
+    With OutMail
+        .to = addrCellVal
+        .CC = ""
+        .BCC = ""
+        .Subject = email_subject
+        .Body = ""
+        .Attachments.Add TempFilePath & TempFileName & FileExtStr
+        'You can add other files also like this
+        '.Attachments.Add ("C:\test.txt")
+        .Display
+    End With
+    On Error GoTo 0
+
+    'Delete the file
+    Kill TempFilePath & TempFileName & FileExtStr
+
+    Set OutMail = Nothing
+    Set OutApp = Nothing
+    
+    Module3.fullReset ' This FULLY resets the data in the workbook and brings ythe user back to Input page
+
+End Sub
